@@ -22,6 +22,7 @@
 #include <kernel/thread.h>
 #include <lk/init.h>
 #include <lk/main.h>
+#include <lib/mxkasan.h>
 
 extern void (*const __init_array_start[])(void);
 extern void (*const __init_array_end[])(void);
@@ -74,6 +75,7 @@ void lk_main(void)
 
     lk_primary_cpu_init_level(LK_INIT_LEVEL_KERNEL, LK_INIT_LEVEL_THREADING - 1);
 
+
     // create a thread to complete system initialization
     dprintf(SPEW, "creating bootstrap completion thread\n");
     thread_t *t = thread_create("bootstrap2", &bootstrap2, NULL, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
@@ -101,6 +103,10 @@ static int bootstrap2(void *arg)
     dprintf(SPEW, "initializing target\n");
     lk_primary_cpu_init_level(LK_INIT_LEVEL_PLATFORM, LK_INIT_LEVEL_TARGET - 1);
     target_init();
+
+
+    dprintf(SPEW, "testing mxkasan\n");
+    mxkasan_test();
 
     dprintf(SPEW, "calling apps_init()\n");
     lk_primary_cpu_init_level(LK_INIT_LEVEL_TARGET, LK_INIT_LEVEL_APPS - 1);

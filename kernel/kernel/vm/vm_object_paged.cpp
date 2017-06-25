@@ -25,6 +25,7 @@
 #include <trace.h>
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
+//#define LOCAL_TRACE 2
 
 namespace {
 

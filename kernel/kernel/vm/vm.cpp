@@ -21,7 +21,7 @@
 #include <string.h>
 #include <trace.h>
 
-#define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
+#define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)  
 
 extern int _start;
 extern int _end;
@@ -178,6 +178,12 @@ void vm_init_postheap(uint level) {
             .size = ROUNDUP(boot_alloc_end - boot_alloc_start, PAGE_SIZE),
             .arch_mmu_flags = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
         },
+        {
+            .name = "mxkasan_shadow",
+            .base = (vaddr_t)0xffffde0000000000,
+            .size = ROUNDUP(0x100000000000, PAGE_SIZE),
+            .arch_mmu_flags = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
+        }
     };
 
     for (uint i = 0; i < countof(regions); ++i) {

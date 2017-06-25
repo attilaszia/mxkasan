@@ -15,6 +15,7 @@ MODULE_DEPS := \
 	kernel/lib/heap \
 	kernel/lib/libc \
 	kernel/lib/mxtl \
+	kernel/lib/mxkasan \
 
 
 MODULE_SRCS := \
