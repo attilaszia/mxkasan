@@ -267,7 +267,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/internal/floatscan.c \
     $(LOCAL_DIR)/src/internal/intscan.c \
     $(LOCAL_DIR)/src/internal/libc.c \
-    $(LOCAL_DIR)/src/internal/procfdname.c \
     $(LOCAL_DIR)/src/internal/shgetc.c \
     $(LOCAL_DIR)/src/ipc/ftok.c \
     $(LOCAL_DIR)/src/ipc/msgctl.c \
@@ -470,7 +469,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/misc/openpty.c \
     $(LOCAL_DIR)/src/misc/ptsname.c \
     $(LOCAL_DIR)/src/misc/pty.c \
-    $(LOCAL_DIR)/src/misc/realpath.c \
     $(LOCAL_DIR)/src/misc/setdomainname.c \
     $(LOCAL_DIR)/src/misc/setpriority.c \
     $(LOCAL_DIR)/src/misc/setrlimit.c \
@@ -679,7 +677,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/signal/sigtimedwait.c \
     $(LOCAL_DIR)/src/signal/sigwait.c \
     $(LOCAL_DIR)/src/signal/sigwaitinfo.c \
-    $(LOCAL_DIR)/src/stat/futimens.c \
     $(LOCAL_DIR)/src/stat/futimesat.c \
     $(LOCAL_DIR)/src/stat/lchmod.c \
     $(LOCAL_DIR)/src/stat/mkfifoat.c \
@@ -1125,6 +1122,7 @@ MODULE_SRCS += \
 MODULE_SRCS += \
     $(LOCAL_DIR)/sanitizers/__asan_early_init.c \
     $(LOCAL_DIR)/sanitizers/asan-stubs.c \
+    $(LOCAL_DIR)/sanitizers/hooks.c \
 
 include make/module.mk
 

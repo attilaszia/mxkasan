@@ -17,16 +17,14 @@
 
 #include <magenta/handle.h>
 #include <magenta/message_packet.h>
-#include <magenta/port_client.h>
 #include <magenta/process_dispatcher.h>
+#include <magenta/rights.h>
 #include <magenta/user_thread.h>
 
 #include <mxalloc/new.h>
 #include <mxtl/type_support.h>
 
 #define LOCAL_TRACE 0
-
-constexpr mx_rights_t kDefaultChannelRights = MX_RIGHT_TRANSFER | MX_RIGHT_READ | MX_RIGHT_WRITE;
 
 // static
 status_t ChannelDispatcher::Create(uint32_t flags,
@@ -45,7 +43,7 @@ status_t ChannelDispatcher::Create(uint32_t flags,
     ch0->Init(ch1);
     ch1->Init(ch0);
 
-    *rights = kDefaultChannelRights;
+    *rights = MX_DEFAULT_CHANNEL_RIGHTS;
     *dispatcher0 = mxtl::move(ch0);
     *dispatcher1 = mxtl::move(ch1);
     return MX_OK;
@@ -124,9 +122,6 @@ void ChannelDispatcher::OnPeerZeroHandles() {
     AutoLock lock(&lock_);
     other_.reset();
     state_tracker_.UpdateState(MX_CHANNEL_WRITABLE, MX_CHANNEL_PEER_CLOSED);
-    if (iopc_)
-        iopc_->Signal(MX_CHANNEL_PEER_CLOSED, &lock_);
-
     // (3B) Abort any waiting Call operations
     // because we've been canceled by reason
     // of the opposing endpoint going away.
@@ -198,8 +193,9 @@ status_t ChannelDispatcher::Call(mxtl::unique_ptr<MessagePacket> msg,
     auto waiter = UserThread::GetCurrent()->GetMessageWaiter();
     if (unlikely(waiter->BeginWait(mxtl::WrapRefPtr(this), msg->get_txid()) != MX_OK)) {
         // If a thread tries BeginWait'ing twice, the VDSO contract around retrying
-        // channel calls has been violated.  Shoot the misbehaving thread.
-        ProcessDispatcher::GetCurrent()->Exit(MX_ERR_BAD_STATE);
+        // channel calls has been violated.  Shoot the misbehaving process.
+        ProcessDispatcher::GetCurrent()->Kill();
+        return MX_ERR_BAD_STATE;
     }
 
     mxtl::RefPtr<ChannelDispatcher> other;
@@ -215,8 +211,8 @@ status_t ChannelDispatcher::Call(mxtl::unique_ptr<MessagePacket> msg,
         }
         other = other_;
 
-        // (0) Before writing outbound message and waiting.
-        // Add our stack-allocated waiter to the list.
+        // (0) Before writing the outbound message and waiting, add our
+        // waiter to the list.
         waiters_.push_back(waiter);
     }
 
@@ -252,7 +248,7 @@ status_t ChannelDispatcher::ResumeInterruptedCall(mx_time_t deadline,
     {
         AutoLock lock(&lock_);
 
-        // (4) If any of (3A), (3B), or (3C) have occured,
+        // (4) If any of (3A), (3B), or (3C) have occurred,
         // we were removed from the waiters list already
         // and get_msg() returns a non-TIMED_OUT status.
         // Otherwise, the status is MX_ERR_TIMED_OUT and it
@@ -268,7 +264,6 @@ int ChannelDispatcher::WriteSelf(mxtl::unique_ptr<MessagePacket> msg) {
     canary_.Assert();
 
     AutoLock lock(&lock_);
-    auto size = msg->data_size();
 
     if (!waiters_.is_empty()) {
         // If the far side is waiting for replies to messages
@@ -288,29 +283,7 @@ int ChannelDispatcher::WriteSelf(mxtl::unique_ptr<MessagePacket> msg) {
     messages_.push_back(mxtl::move(msg));
 
     state_tracker_.UpdateState(0u, MX_CHANNEL_READABLE);
-    if (iopc_)
-        iopc_->Signal(MX_CHANNEL_READABLE, size, &lock_);
     return 0;
-}
-
-status_t ChannelDispatcher::set_port_client(mxtl::unique_ptr<PortClient> client) {
-    canary_.Assert();
-
-    AutoLock lock(&lock_);
-    if (iopc_)
-        return MX_ERR_BAD_STATE;
-
-    if ((client->get_trigger_signals() & ~(MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED)) != 0)
-        return MX_ERR_INVALID_ARGS;
-
-    iopc_ = mxtl::move(client);
-
-    // Replay the messages that are pending.
-    for (auto& msg : messages_) {
-        iopc_->Signal(MX_CHANNEL_READABLE, msg.data_size(), &lock_);
-    }
-
-    return MX_OK;
 }
 
 status_t ChannelDispatcher::user_signal(uint32_t clear_mask, uint32_t set_mask, bool peer) {
@@ -337,17 +310,6 @@ status_t ChannelDispatcher::user_signal(uint32_t clear_mask, uint32_t set_mask, 
 
 status_t ChannelDispatcher::UserSignalSelf(uint32_t clear_mask, uint32_t set_mask) {
     canary_.Assert();
-
-    AutoLock lock(&lock_);
-
-    if (iopc_) {
-        auto satisfied = state_tracker_.GetSignalsState();
-        auto changed = ~satisfied & set_mask;
-
-        if (changed)
-            iopc_->Signal(changed, 0u, &lock_);
-    }
-
     state_tracker_.UpdateState(clear_mask, set_mask);
     return MX_OK;
 }

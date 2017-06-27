@@ -9,7 +9,8 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := userlib
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/walker.c
+    $(LOCAL_DIR)/get.c \
+    $(LOCAL_DIR)/walker.cpp
 
 MODULE_LIBS := \
     system/ulib/magenta \

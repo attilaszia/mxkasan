@@ -38,6 +38,7 @@
 
 #if WITH_LIB_MAGENTA
 #include <magenta/c_user_thread.h>
+#include <magenta/exception.h>
 #endif
 
 #define STACK_DEBUG_BYTE (0x99)
@@ -141,7 +142,7 @@ thread_t *thread_create_etc(
     t->state = THREAD_INITIAL;
     t->signals = 0;
     t->blocking_wait_queue = NULL;
-    t->blocked_status = NO_ERROR;
+    t->blocked_status = MX_OK;
     t->interruptable = false;
     thread_set_last_cpu(t, 0);
 
@@ -238,26 +239,24 @@ static void free_thread_resources(thread_t *t)
  *
  * @param t Thread to flag
  *
- * @return NO_ERROR on success
+ * @return MX_OK on success
  */
 status_t thread_set_real_time(thread_t *t)
 {
     if (!t)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     DEBUG_ASSERT(t->magic == THREAD_MAGIC);
 
     THREAD_LOCK(state);
-#if PLATFORM_HAS_DYNAMIC_TIMER
     if (t == get_current_thread()) {
         /* if we're currently running, cancel the preemption timer. */
         timer_cancel(&percpu[arch_curr_cpu_num()].preempt_timer);
     }
-#endif
     t->flags |= THREAD_FLAG_REAL_TIME;
     THREAD_UNLOCK(state);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 /**
@@ -269,7 +268,7 @@ status_t thread_set_real_time(thread_t *t)
  *
  * @param t  Thread to resume
  *
- * @return NO_ERROR on success.
+ * @return MX_OK on success.
  */
 status_t thread_resume(thread_t *t)
 {
@@ -285,7 +284,7 @@ status_t thread_resume(thread_t *t)
     if (t->state == THREAD_DEATH) {
         THREAD_UNLOCK(state);
         // The thread is dead, resuming it is a no-op.
-        return NO_ERROR;
+        return MX_OK;
     }
 
     /* Clear the suspend signal in case there is a pending suspend */
@@ -299,7 +298,7 @@ status_t thread_resume(thread_t *t)
 
     THREAD_UNLOCK(state);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t thread_detach_and_resume(thread_t *t)
@@ -316,7 +315,7 @@ status_t thread_detach_and_resume(thread_t *t)
  *
  * @param t  Thread to suspend
  *
- * @return NO_ERROR on success.
+ * @return MX_OK on success.
  */
 status_t thread_suspend(thread_t *t)
 {
@@ -329,7 +328,7 @@ status_t thread_suspend(thread_t *t)
         case THREAD_INITIAL:
         case THREAD_DEATH:
             THREAD_UNLOCK(state);
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
         case THREAD_READY:
             /* thread is ready to run and not blocked or suspended.
              * will wake up and deal with the signal soon. */
@@ -347,12 +346,12 @@ status_t thread_suspend(thread_t *t)
         case THREAD_BLOCKED:
             /* thread is blocked on something and marked interruptable */
             if (t->interruptable)
-                thread_unblock_from_wait_queue(t, ERR_INTERRUPTED_RETRY);
+                thread_unblock_from_wait_queue(t, MX_ERR_INTERRUPTED_RETRY);
             break;
         case THREAD_SLEEPING:
             /* thread is sleeping */
             if (t->interruptable) {
-                t->blocked_status = ERR_INTERRUPTED_RETRY;
+                t->blocked_status = MX_ERR_INTERRUPTED_RETRY;
 
                 sched_unblock(t);
             }
@@ -363,7 +362,21 @@ status_t thread_suspend(thread_t *t)
 
     THREAD_UNLOCK(state);
 
-    return NO_ERROR;
+    return MX_OK;
+}
+
+/* Signal an exception on the current thread, to be handled when the
+ * current syscall exits.  Unlike other signals, this is synchronous, in
+ * the sense that a thread signals itself.  This exists primarily so that
+ * we can unwind the stack in order to get the state of userland's
+ * callee-saved registers at the point where userland invoked the
+ * syscall. */
+void thread_signal_exception(void)
+{
+    thread_t* t = get_current_thread();
+    THREAD_LOCK(state);
+    t->signals |= THREAD_SIGNAL_EXCEPTION;
+    THREAD_UNLOCK(state);
 }
 
 status_t thread_join(thread_t *t, int *retcode, lk_time_t deadline)
@@ -375,7 +388,7 @@ status_t thread_join(thread_t *t, int *retcode, lk_time_t deadline)
     if (t->flags & THREAD_FLAG_DETACHED) {
         /* the thread is detached, go ahead and exit */
         THREAD_UNLOCK(state);
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     /* wait for the thread to die */
@@ -406,7 +419,7 @@ status_t thread_join(thread_t *t, int *retcode, lk_time_t deadline)
 
     free_thread_resources(t);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t thread_detach(thread_t *t)
@@ -417,7 +430,7 @@ status_t thread_detach(thread_t *t)
 
     /* if another thread is blocked inside thread_join() on this thread,
      * wake them up with a specific return code */
-    wait_queue_wake_all(&t->retcode_wait_queue, false, ERR_BAD_STATE);
+    wait_queue_wake_all(&t->retcode_wait_queue, false, MX_ERR_BAD_STATE);
 
     /* if it's already dead, then just do what join would have and exit */
     if (t->state == THREAD_DEATH) {
@@ -427,7 +440,7 @@ status_t thread_detach(thread_t *t)
     } else {
         t->flags |= THREAD_FLAG_DETACHED;
         THREAD_UNLOCK(state);
-        return NO_ERROR;
+        return MX_OK;
     }
 }
 
@@ -632,6 +645,11 @@ static void thread_do_suspend(void)
 {
     thread_t *current_thread = get_current_thread();
     if (current_thread->user_callback) {
+        // Note: After calling this callback, we must not return without
+        // calling the callback with THREAD_USER_STATE_RESUME.  That is
+        // because those callbacks act as barriers which control when it is
+        // safe for the mx_thread_read_state()/mx_thread_write_state()
+        // syscalls to access the userland register state kept by thread_t.
         current_thread->user_callback(THREAD_USER_STATE_SUSPEND, current_thread->user_thread);
     }
 
@@ -674,6 +692,20 @@ void thread_process_pending_signals(void)
     THREAD_LOCK(state);
 
     check_kill_signal(current_thread, state);
+
+    /* Report exceptions raised by syscalls */
+    if (current_thread->signals & THREAD_SIGNAL_EXCEPTION) {
+        current_thread->signals &= ~THREAD_SIGNAL_EXCEPTION;
+        THREAD_UNLOCK(state);
+#if WITH_LIB_MAGENTA
+        mx_status_t status = magenta_report_syscall_exception();
+        if (status != MX_OK) {
+            panic("magenta_report_syscall_exception() failed: status=%d\n",
+                  status);
+        }
+#endif
+        return;
+    }
 
     if (current_thread->signals & THREAD_SIGNAL_SUSPEND) {
         /* transition the thread to the suspended state */
@@ -770,7 +802,6 @@ void _thread_resched_internal(void)
     ktrace(TAG_CONTEXT_SWITCH, (uint32_t)newthread->user_tid, cpu | (oldthread->state << 16),
            (uint32_t)(uintptr_t)oldthread, (uint32_t)(uintptr_t)newthread);
 
-#if PLATFORM_HAS_DYNAMIC_TIMER
     if (thread_is_real_time_or_idle(newthread)) {
         if (!thread_is_real_time_or_idle(oldthread)) {
             /* if we're switching from a non real time to a real time, cancel
@@ -786,7 +817,6 @@ void _thread_resched_internal(void)
                 cpu, oldthread, oldthread->name, newthread, newthread->name);
         timer_set_periodic(&percpu[cpu].preempt_timer, THREAD_TICK_RATE, (timer_callback)thread_timer_tick, NULL);
     }
-#endif
 
     /* set some optional target debug leds */
     target_set_debug_led(0, !thread_is_idle(newthread));
@@ -942,7 +972,7 @@ static enum handler_return thread_sleep_handler(timer_t *timer, lk_time_t now, v
         return INT_NO_RESCHEDULE;
     }
 
-    t->blocked_status = NO_ERROR;
+    t->blocked_status = MX_OK;
 
     sched_unblock(t);
 
@@ -984,7 +1014,7 @@ status_t thread_sleep_etc(lk_time_t deadline, bool interruptable)
         if (current_thread->signals & THREAD_SIGNAL_KILL) {
             blocked_status = ERR_INTERRUPTED;
         } else {
-            blocked_status = ERR_INTERRUPTED_RETRY;
+            blocked_status = MX_ERR_INTERRUPTED_RETRY;
         }
         goto out;
     }
@@ -994,7 +1024,7 @@ status_t thread_sleep_etc(lk_time_t deadline, bool interruptable)
         timer_set_oneshot(&timer, deadline, thread_sleep_handler, (void *)current_thread);
     }
     current_thread->state = THREAD_SLEEPING;
-    current_thread->blocked_status = NO_ERROR;
+    current_thread->blocked_status = MX_OK;
 
     current_thread->interruptable = interruptable;
     sched_block();
@@ -1094,11 +1124,9 @@ void thread_init_early(void)
  */
 void thread_init(void)
 {
-#if PLATFORM_HAS_DYNAMIC_TIMER
     for (uint i = 0; i < SMP_MAX_CPUS; i++) {
         timer_initialize(&percpu[i].preempt_timer);
     }
-#endif
 }
 
 /**
@@ -1373,7 +1401,7 @@ static enum handler_return wait_queue_timeout_handler(timer_t *timer, lk_time_t 
         return INT_NO_RESCHEDULE;
 
     enum handler_return ret = INT_NO_RESCHEDULE;
-    if (thread_unblock_from_wait_queue(thread, ERR_TIMED_OUT) >= NO_ERROR) {
+    if (thread_unblock_from_wait_queue(thread, MX_ERR_TIMED_OUT) >= MX_OK) {
         ret = INT_RESCHEDULE;
     }
 
@@ -1393,11 +1421,11 @@ static enum handler_return wait_queue_timeout_handler(timer_t *timer, lk_time_t 
  * @param  deadline The time at which to abort the wait
  *
  * If the deadline is zero, this function returns immediately with
- * ERR_TIMED_OUT.  If the deadline is INFINITE_TIME, this function
+ * MX_ERR_TIMED_OUT.  If the deadline is INFINITE_TIME, this function
  * waits indefinitely.  Otherwise, this function returns with
- * ERR_TIMED_OUT when the deadline occurs.
+ * MX_ERR_TIMED_OUT when the deadline occurs.
  *
- * @return ERR_TIMED_OUT on timeout, else returns the return
+ * @return MX_ERR_TIMED_OUT on timeout, else returns the return
  * value specified when the queue was woken by wait_queue_wake_one().
  */
 status_t wait_queue_block(wait_queue_t *wait, lk_time_t deadline)
@@ -1412,13 +1440,13 @@ status_t wait_queue_block(wait_queue_t *wait, lk_time_t deadline)
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
 
     if (deadline <= current_time())
-        return ERR_TIMED_OUT;
+        return MX_ERR_TIMED_OUT;
 
     if (current_thread->interruptable && unlikely(current_thread->signals)) {
         if (current_thread->signals & THREAD_SIGNAL_KILL) {
             return ERR_INTERRUPTED;
         } else if (current_thread->signals & THREAD_SIGNAL_SUSPEND) {
-            return ERR_INTERRUPTED_RETRY;
+            return MX_ERR_INTERRUPTED_RETRY;
         }
     }
 
@@ -1426,7 +1454,7 @@ status_t wait_queue_block(wait_queue_t *wait, lk_time_t deadline)
     wait->count++;
     current_thread->state = THREAD_BLOCKED;
     current_thread->blocking_wait_queue = wait;
-    current_thread->blocked_status = NO_ERROR;
+    current_thread->blocked_status = MX_OK;
 
     /* if the deadline is nonzero or noninfinite, set a callback to yank us out of the queue */
     if (deadline != INFINITE_TIME) {
@@ -1595,7 +1623,7 @@ void wait_queue_destroy(wait_queue_t *wait)
  * @param wait_queue_error  The return value which the new thread will receive
  *   from wait_queue_block().
  *
- * @return ERR_BAD_STATE if thread was not in any wait queue.
+ * @return MX_ERR_BAD_STATE if thread was not in any wait queue.
  */
 status_t thread_unblock_from_wait_queue(thread_t *t, status_t wait_queue_error)
 {
@@ -1604,7 +1632,7 @@ status_t thread_unblock_from_wait_queue(thread_t *t, status_t wait_queue_error)
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
 
     if (t->state != THREAD_BLOCKED)
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
     DEBUG_ASSERT(t->blocking_wait_queue != NULL);
     DEBUG_ASSERT(t->blocking_wait_queue->magic == WAIT_QUEUE_MAGIC);
@@ -1617,7 +1645,7 @@ status_t thread_unblock_from_wait_queue(thread_t *t, status_t wait_queue_error)
 
     sched_unblock(t);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 #if WITH_PANIC_BACKTRACE
@@ -1626,10 +1654,10 @@ static status_t thread_read_stack(thread_t* t, void* ptr, void* out, size_t sz)
     if (!is_kernel_address((uintptr_t)ptr) ||
         (ptr < t->stack) ||
         (ptr > (t->stack + t->stack_size - sizeof(void*)))) {
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
     memcpy(out, ptr, sz);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int thread_get_backtrace(thread_t* t, void* fp, thread_backtrace_t* tb)

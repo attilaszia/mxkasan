@@ -9,7 +9,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <driver/driver-api.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/binding.h>
@@ -308,19 +307,38 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         //TODO: api lock integration
         log(RPC_IN, "devhost[%s] bind driver '%s'\n", path, name);
         mx_driver_t* drv;
-        if ((r = dh_find_driver(name, hin[0], &drv)) < 0) {
+        if (ios->dev->flags & DEV_FLAG_DEAD) {
+            log(ERROR, "devhost[%s] bind to removed device disallowed\n", path);
+            r = MX_ERR_IO_NOT_PRESENT;
+        } else if ((r = dh_find_driver(name, hin[0], &drv)) < 0) {
             log(ERROR, "devhost[%s] driver load failed: %d\n", path, r);
         } else {
+            void* cookie = NULL;
             if (drv->ops->bind) {
-                r = drv->ops->bind(drv->ctx, ios->dev, &ios->dev->owner_cookie);
+                r = drv->ops->bind(drv->ctx, ios->dev, &cookie);
             } else {
                 r = MX_ERR_NOT_SUPPORTED;
             }
             if (r < 0) {
                 log(ERROR, "devhost[%s] bind driver '%s' failed: %d\n", path, name, r);
             } else {
-                //TODO: best behaviour for multibind? maybe retire "owner"?
-                ios->dev->owner = drv;
+                //TODO: Best behaviour for multibind? maybe retire "owner"?
+                //      For now this is extermely rare, so we mostly can ignore
+                //      it.
+                if (drv->ops->unbind || cookie) {
+                    log(INFO, "devhost[%s] driver '%s' unbind=%p, cookie=%p\n",
+                        path, name, drv->ops->unbind, cookie);
+
+                    DM_LOCK();
+                    if (ios->dev->owner) {
+                        log(ERROR, "devhost[%s] driver '%s' device already owned!\n", path, name);
+                    } else {
+                        ios->dev->owner = drv;
+                        ios->dev->owner_cookie = cookie;
+                        ios->dev->refcount++;
+                    }
+                    DM_UNLOCK();
+                }
             }
         }
         dc_msg_t reply = {
@@ -569,7 +587,6 @@ mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_libname) {
     return devhost_rpc(dev, DC_OP_BIND_DEVICE, drv_libname, "bind-device", &rsp, sizeof(rsp));
 }
 
-extern driver_api_t devhost_api;
 
 mx_handle_t root_resource_handle;
 
@@ -581,12 +598,10 @@ mx_status_t devhost_start_iostate(devhost_iostate_t* ios, mx_handle_t h) {
     return port_wait(&dh_port, &ios->ph);
 }
 
-int main(int argc, char** argv) {
+__EXPORT int device_host_main(int argc, char** argv) {
     devhost_io_init();
 
     log(TRACE, "devhost: main()\n");
-
-    driver_api_init(&devhost_api);
 
     root_ios.ph.handle = mx_get_startup_handle(PA_HND(PA_USER0, 0));
     if (root_ios.ph.handle == MX_HANDLE_INVALID) {

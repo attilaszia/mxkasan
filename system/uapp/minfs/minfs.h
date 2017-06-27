@@ -18,8 +18,8 @@
 
 #include <assert.h>
 #include <limits.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "misc.h"
 
@@ -36,7 +36,7 @@ namespace minfs {
 
 constexpr uint64_t kMinfsMagic0 = (0x002153466e694d21ULL);
 constexpr uint64_t kMinfsMagic1 = (0x385000d3d3d3d304ULL);
-constexpr uint32_t kMinfsVersion = 0x00000002;
+constexpr uint32_t kMinfsVersion = 0x00000003;
 
 constexpr uint32_t kMinfsRootIno        = 1;
 constexpr uint32_t kMinfsFlagClean      = 1;
@@ -70,6 +70,8 @@ typedef struct {
     uint32_t inode_size;    // 256
     uint32_t block_count;   // total number of blocks
     uint32_t inode_count;   // total number of inodes
+    uint32_t alloc_block_count; // total number of allocated data blocks
+    uint32_t alloc_inode_count; // total number of allocated inodes
     uint32_t ibm_block;     // first blockno of inode allocation bitmap
     uint32_t abm_block;     // first blockno of block allocation bitmap
     uint32_t ino_block;     // first blockno of inode table
@@ -198,36 +200,5 @@ private:
     int fd_;
     uint32_t blockmax_;
 };
-
-
-namespace internal {
-
-template <typename T>
-struct GetBlockHelper;
-
-template <>
-struct GetBlockHelper <const void*> {
-    static void* get_block(const void* data, uint32_t blkno) {
-        assert(kMinfsBlockSize <= (blkno + 1) * kMinfsBlockSize); // Avoid overflow
-        return (void*)((uintptr_t)(data) + (uintptr_t)(kMinfsBlockSize * blkno));
-    }
-};
-
-template <>
-struct GetBlockHelper <const RawBitmap&> {
-    static void* get_block(const RawBitmap& bitmap, uint32_t blkno) {
-        assert(blkno * kMinfsBlockSize < bitmap.size()); // Accessing beyond end of bitmap
-        return GetBlockHelper<const void*>::get_block(bitmap.StorageUnsafe()->GetData(), blkno);
-    }
-};
-
-} // namespace internal
-
-// Access the "blkno"-th block within data.
-// "blkno = 0" corresponds to the first block within data.
-template <typename T>
-void* GetBlock(T data, uint32_t blkno) {
-    return internal::GetBlockHelper<T>::get_block(data, blkno);
-}
 
 } // namespace minfs

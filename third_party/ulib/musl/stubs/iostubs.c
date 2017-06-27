@@ -132,6 +132,12 @@ static ssize_t stub_readlinkat(int fd, const char* restrict path, char* restrict
 }
 weak_alias(stub_readlinkat, readlinkat);
 
+static char* stub_realpath(const char* restrict filename, char* restrict resolved) {
+    errno = ENOSYS;
+    return NULL;
+}
+weak_alias(stub_realpath, realpath);
+
 static int stub_mkdir(const char* path, mode_t mode) {
     errno = ENOSYS;
     return -1;
@@ -209,6 +215,12 @@ static int stub_pipe2(int pipe2fd[2], int flags) {
     return -1;
 }
 weak_alias(stub_pipe2, pipe2);
+
+static int stub_futimens(int fd, const struct timespec times[2]) {
+    errno = ENOSYS;
+    return -1;
+}
+weak_alias(stub_futimens, futimens);
 
 static int stub_utimensat(int fd, const char* path, const struct timespec times[2], int flags) {
     errno = ENOSYS;

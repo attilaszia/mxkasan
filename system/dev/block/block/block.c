@@ -23,18 +23,21 @@
 typedef struct blkdev {
     mx_device_t* mxdev;
     mx_device_t* parent;
-    block_ops_t* blockops;
+    block_protocol_t proto;
 
     mtx_t lock;
+    uint32_t threadcount;
     BlockServer* bs;
+    bool dead; // Release has been called; we should free memory and leave.
 } blkdev_t;
 
 static int blockserver_thread(void* arg) {
     blkdev_t* bdev = (blkdev_t*)arg;
     BlockServer* bs = bdev->bs;
+    bdev->threadcount++;
     mtx_unlock(&bdev->lock);
 
-    blockserver_serve(bs, device_get_parent(bdev->mxdev), bdev->blockops);
+    blockserver_serve(bs, &bdev->proto);
 
     mtx_lock(&bdev->lock);
     if (bdev->bs == bs) {
@@ -43,9 +46,15 @@ static int blockserver_thread(void* arg) {
         // has closed.
         bdev->bs = NULL;
     }
+    bdev->threadcount--;
+    bool cleanup = bdev->dead & (bdev->threadcount == 0);
     mtx_unlock(&bdev->lock);
 
     blockserver_free(bs);
+
+    if (cleanup) {
+        free(bdev);
+    }
     return 0;
 }
 
@@ -154,16 +163,13 @@ done:
     return status;
 }
 
-static mx_status_t blkdev_fifo_close(blkdev_t* bdev) {
-    mtx_lock(&bdev->lock);
+static mx_status_t blkdev_fifo_close_locked(blkdev_t* bdev) {
     if (bdev->bs != NULL) {
         blockserver_shutdown(bdev->bs);
         // Ensure that the next thread to call "get_fifos" will
         // not see the previous block server.
         bdev->bs = NULL;
     }
-    mtx_unlock(&bdev->lock);
-
     return MX_OK;
 }
 
@@ -181,10 +187,14 @@ static mx_status_t blkdev_ioctl(void* ctx, uint32_t op, const void* cmd,
         return blkdev_alloc_txn(blkdev, cmd, cmdlen, reply, max, out_actual);
     case IOCTL_BLOCK_FREE_TXN:
         return blkdev_free_txn(blkdev, cmd, cmdlen);
-    case IOCTL_BLOCK_FIFO_CLOSE:
-        return blkdev_fifo_close(blkdev);
+    case IOCTL_BLOCK_FIFO_CLOSE: {
+        mtx_lock(&blkdev->lock);
+        mx_status_t status = blkdev_fifo_close_locked(blkdev);
+        mtx_unlock(&blkdev->lock);
+        return status;
+    }
     default:
-        return device_op_ioctl(blkdev->parent, op, cmd, cmdlen, reply, max, out_actual);
+        return device_ioctl(blkdev->parent, op, cmd, cmdlen, reply, max, out_actual);
     }
 }
 
@@ -195,7 +205,7 @@ static void blkdev_iotxn_queue(void* ctx, iotxn_t* txn) {
 
 static mx_off_t blkdev_get_size(void* ctx) {
     blkdev_t* blkdev = ctx;
-    return device_op_get_size(blkdev->parent);
+    return device_get_size(blkdev->parent);
 }
 
 static void blkdev_unbind(void* ctx) {
@@ -205,8 +215,19 @@ static void blkdev_unbind(void* ctx) {
 
 static void blkdev_release(void* ctx) {
     blkdev_t* blkdev = ctx;
-    blkdev_fifo_close(blkdev);
-    free(blkdev);
+    mtx_lock(&blkdev->lock);
+    bool bg_thread_running = (blkdev->threadcount != 0);
+    blkdev_fifo_close_locked(blkdev);
+    blkdev->dead = true;
+    mtx_unlock(&blkdev->lock);
+
+    if (!bg_thread_running) {
+        // If it isn't running, we need to clean up.
+        // Otherwise, it'll free blkdev's memory when it's done,
+        // since (1) no one else can call get_fifos anymore, and
+        // (2) it'll clean up when it sees that blkdev is dead.
+        free(blkdev);
+    }
 }
 
 static mx_protocol_device_t blkdev_ops = {
@@ -223,11 +244,12 @@ static mx_status_t block_driver_bind(void* ctx, mx_device_t* dev, void** cookie)
     if ((bdev = calloc(1, sizeof(blkdev_t))) == NULL) {
         return MX_ERR_NO_MEMORY;
     }
+    bdev->threadcount = 0;
     mtx_init(&bdev->lock, mtx_plain);
     bdev->parent = dev;
 
     mx_status_t status;
-    if (device_op_get_protocol(dev, MX_PROTOCOL_BLOCK_CORE, (void**)&bdev->blockops)) {
+    if (device_get_protocol(dev, MX_PROTOCOL_BLOCK_CORE, &bdev->proto)) {
         status = MX_ERR_INTERNAL;
         goto fail;
     }

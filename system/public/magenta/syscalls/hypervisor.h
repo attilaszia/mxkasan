@@ -16,15 +16,16 @@ __BEGIN_CDECLS
 #define MX_HYPERVISOR_OP_GUEST_CREATE           1u
 #define MX_HYPERVISOR_OP_GUEST_ENTER            2u
 #define MX_HYPERVISOR_OP_GUEST_MEM_TRAP         3u
+#define MX_HYPERVISOR_OP_GUEST_INTERRUPT        4u
 
-#define MX_HYPERVISOR_OP_GUEST_SET_GPR          4u
-#define MX_HYPERVISOR_OP_GUEST_GET_GPR          5u
+#define MX_HYPERVISOR_OP_GUEST_SET_GPR          5u
+#define MX_HYPERVISOR_OP_GUEST_GET_GPR          6u
 
-#define MX_HYPERVISOR_OP_GUEST_SET_ENTRY_IP     6u
+#define MX_HYPERVISOR_OP_GUEST_SET_ENTRY_IP     7u
 
 #if __x86_64__
-#define MX_HYPERVISOR_OP_GUEST_SET_ENTRY_CR3    7u
-#define MX_HYPERVISOR_OP_GUEST_SET_APIC_MEM     8u
+#define MX_HYPERVISOR_OP_GUEST_SET_ENTRY_CR3    8u
+#define MX_HYPERVISOR_OP_GUEST_SET_APIC_MEM     9u
 #endif // __x86_64__
 
 typedef struct mx_guest_gpr {
@@ -35,6 +36,7 @@ typedef struct mx_guest_gpr {
     uint64_t rcx;
     uint64_t rdx;
     uint64_t rbx;
+    uint64_t rsp;
     uint64_t rbp;
     uint64_t rsi;
     uint64_t rdi;
@@ -46,6 +48,8 @@ typedef struct mx_guest_gpr {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
+    // Only the user-controllable lower 16-bits of the flags register.
+    uint16_t flags;
 #else
 #error Unsupported architecture
 #endif
@@ -82,13 +86,15 @@ typedef struct mx_guest_port_out {
     };
 } mx_guest_port_out_t;
 
+#define X86_MAX_INST_LEN                        15u
+
 typedef struct mx_guest_mem_trap {
 #if __aarch64__
     uint32_t instruction;
 #elif __x86_64__
     uint8_t instruction_length;
     // NOTE: x86 instructions are guaranteed to be 15 bytes or fewer.
-    uint8_t instruction_buffer[15];
+    uint8_t instruction_buffer[X86_MAX_INST_LEN];
 #else
 #error Unsupported architecture
 #endif

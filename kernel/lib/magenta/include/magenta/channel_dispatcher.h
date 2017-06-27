@@ -19,8 +19,6 @@
 #include <mxtl/ref_counted.h>
 #include <mxtl/unique_ptr.h>
 
-class PortClient;
-
 class ChannelDispatcher final : public Dispatcher {
 public:
     static status_t Create(uint32_t flags, mxtl::RefPtr<Dispatcher>* dispatcher0,
@@ -32,7 +30,6 @@ public:
     mx_status_t add_observer(StateObserver* observer) final;
     mx_koid_t get_related_koid() const final TA_REQ(lock_) { return other_koid_; }
     status_t user_signal(uint32_t clear_mask, uint32_t set_mask, bool peer) final;
-    status_t set_port_client(mxtl::unique_ptr<PortClient> client) final;
 
     void on_zero_handles() final;
 
@@ -103,13 +100,17 @@ public:
         mx_txid_t get_txid() const { return txid_; }
 
         mx_status_t Wait(lk_time_t deadline) {
-            DEBUG_ASSERT(armed());
+            if (unlikely(!armed())) {
+                return MX_ERR_BAD_STATE;
+            }
             return event_.Wait(deadline);
         }
 
         // Returns any delivered message via out and the status.
         mx_status_t EndWait(mxtl::unique_ptr<MessagePacket>* out) {
-            DEBUG_ASSERT(armed());
+            if (unlikely(!armed())) {
+                return MX_ERR_BAD_STATE;
+            }
             *out = mxtl::move(msg_);
             channel_ = nullptr;
             return status_;
@@ -144,7 +145,6 @@ private:
     Mutex lock_;
     MessageList messages_ TA_GUARDED(lock_);
     WaiterList waiters_ TA_GUARDED(lock_);
-    mxtl::unique_ptr<PortClient> iopc_ TA_GUARDED(lock_);
     StateTracker state_tracker_;
     mxtl::RefPtr<ChannelDispatcher> other_ TA_GUARDED(lock_);
     mx_koid_t other_koid_ TA_GUARDED(lock_);

@@ -81,7 +81,7 @@ status_t arm64_set_secondary_sp(uint cluster, uint cpu,
         i++;
     }
     if (i==SMP_MAX_CPUS)
-        return ERR_NO_RESOURCES;
+        return MX_ERR_NO_RESOURCES;
     LTRACEF("set mpid 0x%lx sp to %p\n", mpid, sp);
 #if __has_feature(safe_stack)
     LTRACEF("set mpid 0x%lx unsafe-sp to %p\n", mpid, unsafe_sp);
@@ -93,7 +93,7 @@ status_t arm64_set_secondary_sp(uint cluster, uint cpu,
     arm64_secondary_sp_list[i].stack_guard = get_current_thread()->arch.stack_guard;
     arm64_secondary_sp_list[i].unsafe_sp = unsafe_sp;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static void parse_ccsid(arm64_cache_desc_t* desc, uint64_t ccsid) {
@@ -256,19 +256,27 @@ static void midr_to_core(uint32_t midr, char *str, size_t len)
     snprintf(str, len, "%s r%up%u", partnum_str, variant, revision);
 }
 
-static void print_midr()
+static void print_cpu_info()
 {
     uint32_t midr = (uint32_t)ARM64_READ_SYSREG(midr_el1);
     char cpu_name[128];
     midr_to_core(midr, cpu_name, sizeof(cpu_name));
-    dprintf(INFO, "ARM cpu %u: midr_el1 %#x %s\n", arch_curr_cpu_num(), midr, cpu_name);
+
+    uint64_t mpidr = ARM64_READ_SYSREG(mpidr_el1);
+
+    dprintf(INFO, "ARM cpu %u: midr %#x '%s' mpidr %#" PRIx64 " aff %u:%u:%u:%u\n", arch_curr_cpu_num(), midr, cpu_name,
+            mpidr,
+            (uint32_t)((mpidr & MPIDR_AFF3_MASK) >> MPIDR_AFF3_SHIFT),
+            (uint32_t)((mpidr & MPIDR_AFF2_MASK) >> MPIDR_AFF2_SHIFT),
+            (uint32_t)((mpidr & MPIDR_AFF1_MASK) >> MPIDR_AFF1_SHIFT),
+            (uint32_t)((mpidr & MPIDR_AFF0_MASK) >> MPIDR_AFF0_SHIFT));
 }
 
 void arch_init(void)
 {
     arch_mp_init_percpu();
 
-    print_midr();
+    print_cpu_info();
 
     uint32_t max_cpus = arch_max_num_cpus();
     uint32_t cmdline_max_cpus = cmdline_get_uint32("smp.maxcpus", max_cpus);
@@ -343,7 +351,7 @@ extern "C" void arm64_secondary_entry(void)
 
     arch_mp_init_percpu();
 
-    print_midr();
+    print_cpu_info();
 
     lk_secondary_cpu_entry();
 }

@@ -54,7 +54,7 @@ static mx_handle_t load_object_fd(int fd, const char* fn) {
     mx_handle_t vmo;
     mx_status_t status = mxio_get_vmo(fd, &vmo);
     close(fd);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
     mx_object_set_property(vmo, MX_PROP_NAME, fn, strlen(fn));
     return vmo;
@@ -62,6 +62,7 @@ static mx_handle_t load_object_fd(int fd, const char* fn) {
 
 static mx_handle_t default_load_object(void* ignored,
                                        uint32_t load_op,
+                                       mx_handle_t request_handle,
                                        const char* fn) {
     switch (load_op) {
     case LOADER_SVC_OP_LOAD_OBJECT:
@@ -79,18 +80,25 @@ static mx_handle_t default_load_object(void* ignored,
         if (fn[0] != '/') {
             fprintf(stderr, "dlsvc: invalid script interpreter '%s' is "
                     "not an absolute path\n", fn);
-            return ERR_NOT_FOUND;
+            return MX_ERR_NOT_FOUND;
         }
         int fd = open(fn, O_RDONLY);
         if (fd >= 0)
             return load_object_fd(fd, fn);
         break;
+    case LOADER_SVC_OP_PUBLISH_DATA_SINK:
+        // TODO(mcgrathr): Implement something.
+        fprintf(stderr, "dlsvc: ignoring data sink request for '%s'\n", fn);
+        mx_status_t status = mx_handle_close(request_handle);
+        if (status == MX_OK)
+            status = MX_ERR_NOT_SUPPORTED;
+        return status;
     default:
         __builtin_trap();
     }
 
     fprintf(stderr, "dlsvc: could not open '%s'\n", fn);
-    return ERR_NOT_FOUND;
+    return MX_ERR_NOT_FOUND;
 }
 
 struct startup {
@@ -100,22 +108,29 @@ struct startup {
     mx_handle_t syslog_handle;
 };
 
-static mx_status_t handle_loader_rpc(mx_handle_t h, mxio_loader_service_function_t loader,
+static mx_status_t handle_loader_rpc(mx_handle_t h,
+                                     mxio_loader_service_function_t loader,
                                      void* loader_arg, mx_handle_t sys_log) {
     uint8_t data[1024];
     mx_loader_svc_msg_t* msg = (void*) data;
     uint32_t sz = sizeof(data);
-    mx_status_t r;
-    if ((r = mx_channel_read(h, 0, msg, NULL, sz, 0, &sz, NULL)) < 0) {
+    mx_handle_t request_handle;
+    uint32_t nhandles;
+    mx_status_t r =
+        mx_channel_read(h, 0, msg, &request_handle, sz, 1, &sz, &nhandles);
+    if (r != MX_OK) {
         // This is the normal error for the other end going away,
         // which happens when the process dies.
-        if (r != ERR_PEER_CLOSED)
+        if (r != MX_ERR_PEER_CLOSED)
             fprintf(stderr, "dlsvc: msg read error %d: %s\n", r, mx_status_get_string(r));
         return r;
     }
+    if (nhandles == 0)
+        request_handle = MX_HANDLE_INVALID;
     if ((sz <= sizeof(mx_loader_svc_msg_t))) {
+        mx_handle_close(request_handle);
         fprintf(stderr, "dlsvc: runt message\n");
-        return ERR_IO;
+        return MX_ERR_IO;
     }
 
     // forcibly null-terminate the message data argument
@@ -125,21 +140,29 @@ static mx_status_t handle_loader_rpc(mx_handle_t h, mxio_loader_service_function
     switch (msg->opcode) {
     case LOADER_SVC_OP_LOAD_OBJECT:
     case LOADER_SVC_OP_LOAD_SCRIPT_INTERP:
+    case LOADER_SVC_OP_PUBLISH_DATA_SINK:
         // TODO(MG-491): Use a threadpool for loading, and guard against
         // other starvation attacks.
-        handle = (*loader)(loader_arg, msg->opcode, (const char*) msg->data);
-        msg->arg = handle < 0 ? handle : NO_ERROR;
+        handle = (*loader)(loader_arg, msg->opcode,
+                           request_handle, (const char*) msg->data);
+        request_handle = MX_HANDLE_INVALID;
+        msg->arg = handle < 0 ? handle : MX_OK;
         break;
     case LOADER_SVC_OP_DEBUG_PRINT:
         log_printf(sys_log, "dlsvc: debug: %s\n", (const char*) msg->data);
-        msg->arg = NO_ERROR;
+        msg->arg = MX_OK;
         break;
     case LOADER_SVC_OP_DONE:
-        return ERR_PEER_CLOSED;
+        return MX_ERR_PEER_CLOSED;
     default:
         fprintf(stderr, "dlsvc: invalid opcode 0x%x\n", msg->opcode);
-        msg->arg = ERR_INVALID_ARGS;
+        msg->arg = MX_ERR_INVALID_ARGS;
         break;
+    }
+    if (request_handle != MX_HANDLE_INVALID) {
+        fprintf(stderr, "dlsvc: unused handle (%#x) opcode=%#x data=\"%s\"\n",
+                request_handle, msg->opcode, msg->data);
+        mx_handle_close(request_handle);
     }
 
     // msg->txid returned as received from the client.
@@ -151,7 +174,7 @@ static mx_status_t handle_loader_rpc(mx_handle_t h, mxio_loader_service_function
         fprintf(stderr, "dlsvc: msg write error: %d: %s\n", r, mx_status_get_string(r));
         return r;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static int loader_service_thread(void* arg) {
@@ -168,7 +191,7 @@ static int loader_service_thread(void* arg) {
         if ((r = mx_object_wait_one(h, MX_CHANNEL_READABLE, MX_TIME_INFINITE, NULL)) < 0) {
             // This is the normal error for the other end going away,
             // which happens when the process dies.
-            if (r != ERR_BAD_STATE)
+            if (r != MX_ERR_BAD_STATE)
                 fprintf(stderr, "dlsvc: wait error %d: %s\n", r, mx_status_get_string(r));
             break;
         }
@@ -192,18 +215,18 @@ struct mxio_multiloader {
 mx_status_t mxio_multiloader_create(const char* name,
                                     mxio_multiloader_t** ml_out) {
     if (name == NULL || name[0] == '\0' || ml_out == NULL) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     mxio_multiloader_t* ml = malloc(sizeof(mxio_multiloader_t));
     if (ml == NULL) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     memset(ml, 0, sizeof(*ml));
     strncpy(ml->name, name, sizeof(ml->name) - 1);
     *ml_out = ml;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t multiloader_cb(mx_handle_t h, void* cb, void* cookie) {
@@ -222,7 +245,7 @@ static mx_status_t multiloader_cb(mx_handle_t h, void* cb, void* cookie) {
 // the same through IOCTL_DMCTL_GET_LOADER_SERVICE_CHANNEL.
 mx_handle_t mxio_multiloader_new_service(mxio_multiloader_t* ml) {
     if (ml == NULL) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     mtx_lock(&ml->dispatcher_lock);
@@ -268,14 +291,14 @@ void mxio_force_local_loader_service(void) {
 static mx_handle_t get_system_loader_service(void) {
     int fd = open("/dev/misc/dmctl", O_RDONLY);
     if (fd < 0) {
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
 
     mx_handle_t h;
     ssize_t s = ioctl_dmctl_get_loader_service_channel(fd, &h);
     close(fd);
     if (s != (ssize_t)sizeof(mx_handle_t)) {
-        return s < 0 ? s : ERR_INTERNAL;
+        return s < 0 ? s : MX_ERR_INTERNAL;
     }
     return h;
 }
@@ -302,7 +325,7 @@ mx_handle_t mxio_loader_service(mxio_loader_service_function_t loader,
 
     struct startup *startup = malloc(sizeof(*startup));
     if (startup == NULL)
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     mx_handle_t h;
     mx_status_t r;

@@ -13,6 +13,7 @@
 #include <magenta/handle_owner.h>
 #include <magenta/channel_dispatcher.h>
 #include <magenta/interrupt_event_dispatcher.h>
+#include <magenta/rights.h>
 #include <magenta/vm_object_dispatcher.h>
 #include <mxalloc/new.h>
 #include <string.h>
@@ -37,14 +38,6 @@ private:
     friend class ResourceDispatcher;
 };
 
-// WRITE: ability to add child resources to a resource
-// EXECUTE: ability to get_handle() and do_action()
-// ENUMERATE: ability to list children, list records, and get children
-
-constexpr mx_rights_t kDefaultResourceRights =
-    MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_EXECUTE | MX_RIGHT_DESTROY |
-    MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_ENUMERATE;
-
 mx_status_t ResourceDispatcher::Create(mxtl::RefPtr<ResourceDispatcher>* dispatcher,
                                     mx_rights_t* rights, const char* name, uint16_t subtype) {
     AllocChecker ac;
@@ -52,7 +45,7 @@ mx_status_t ResourceDispatcher::Create(mxtl::RefPtr<ResourceDispatcher>* dispatc
     if (!ac.check())
         return MX_ERR_NO_MEMORY;
 
-    *rights = kDefaultResourceRights;
+    *rights = MX_DEFAULT_RESOURCE_RIGHTS;
     *dispatcher = mxtl::AdoptRef<ResourceDispatcher>(disp);
     return MX_OK;
 }
@@ -72,20 +65,6 @@ ResourceDispatcher::ResourceDispatcher(const char* name, uint16_t subtype) :
 // nice to be able to prune subtrees and as they could be of
 // an arbitrary size, we'll need to be careful.
 ResourceDispatcher::~ResourceDispatcher() {
-}
-
-mx_status_t ResourceDispatcher::set_port_client(mxtl::unique_ptr<PortClient> client) {
-    canary_.Assert();
-
-    AutoLock lock(&lock_);
-    if (iopc_)
-        return MX_ERR_BAD_STATE;
-
-    if ((client->get_trigger_signals() & (~MX_RESOURCE_CHILD_ADDED)) != 0)
-        return MX_ERR_INVALID_ARGS;
-
-    iopc_ = mxtl::move(client);
-    return MX_OK;
 }
 
 mx_status_t ResourceDispatcher::MakeRoot() {
@@ -147,9 +126,6 @@ mx_status_t ResourceDispatcher::AddChild(const mxtl::RefPtr<ResourceDispatcher>&
 
     children_.push_back(mxtl::move(child));
     ++num_children_;
-
-    if (iopc_)
-        iopc_->Signal(MX_RESOURCE_CHILD_ADDED, &lock_);
 
     state_tracker_.StrobeState(MX_RESOURCE_CHILD_ADDED);
 

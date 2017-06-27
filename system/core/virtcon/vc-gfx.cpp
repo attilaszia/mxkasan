@@ -4,14 +4,11 @@
 
 #include <gfx/gfx.h>
 
-#define VCDEBUG 1
-
-#include "vc.h"
-#include "vcdebug.h"
-
 #include <magenta/device/display.h>
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
+
+#include "vc.h"
 
 gfx_surface* vc_gfx;
 gfx_surface* vc_tb_gfx;
@@ -47,7 +44,7 @@ mx_status_t vc_init_gfx(gfx_surface* test) {
     vc_tb_gfx = gfx_create_surface(NULL, test->width, font->height,
                                    test->stride, test->format, 0);
     if (!vc_tb_gfx) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     // init the main surface
@@ -56,10 +53,10 @@ mx_status_t vc_init_gfx(gfx_surface* test) {
     if (!vc_gfx) {
         gfx_surface_destroy(vc_tb_gfx);
         vc_tb_gfx = NULL;
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void vc_gfx_invalidate_all(vc_t* vc) {
@@ -126,7 +123,7 @@ mx_status_t vc_init_gfx(int fd) {
     mx_status_t r;
     if (ioctl_display_get_fb(fd, &fb) < 0) {
         printf("vc_alloc: cannot get fb from driver instance\n");
-        r = ERR_INTERNAL;
+        r = MX_ERR_INTERNAL;
         goto fail;
     }
 
@@ -138,7 +135,7 @@ mx_status_t vc_init_gfx(int fd) {
         goto fail;
     }
 
-    r = ERR_NO_MEMORY;
+    r = MX_ERR_NO_MEMORY;
     // init the status bar
     if ((vc_tb_gfx = gfx_create_surface((void*) vc_gfx_mem, fb.info.width, font->height,
                                         fb.info.stride, fb.info.format, 0)) == NULL) {
@@ -152,7 +149,7 @@ mx_status_t vc_init_gfx(int fd) {
         goto fail;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 
 fail:
     vc_free_gfx();

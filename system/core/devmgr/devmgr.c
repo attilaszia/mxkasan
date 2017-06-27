@@ -5,7 +5,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <ddk/protocol/device.h>
+#include <magenta/device/device.h>
 #include <fs-management/mount.h>
 #include <gpt/gpt.h>
 #include <launchpad/launchpad.h>
@@ -230,6 +230,12 @@ int devmgr_start_appmgr(void* arg) {
     static bool appmgr_started = false;
     static bool autorun_started = false;
     static mtx_t lock = MTX_INIT;
+
+    // we're starting the appmgr because /system is present
+    // so we also signal the device coordinator that those
+    // drivers are now loadable
+    load_system_drivers();
+
     mtx_lock(&lock);
     struct stat s;
     if (!appmgr_started && stat(argv_appmgr[0], &s) == 0) {
@@ -309,7 +315,7 @@ int service_starter(void* arg) {
 
     int dirfd;
     if ((dirfd = open("/dev/class/block", O_DIRECTORY|O_RDONLY)) >= 0) {
-        mxio_watch_directory(dirfd, block_device_added, NULL);
+        mxio_watch_directory(dirfd, block_device_added, MX_TIME_INFINITE, NULL);
     }
     close(dirfd);
     return 0;

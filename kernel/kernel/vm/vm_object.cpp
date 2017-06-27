@@ -23,10 +23,19 @@
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 
+Mutex VmObject::all_vmos_lock_ = {};
+VmObject::GlobalList VmObject::all_vmos_ = {};
+
 VmObject::VmObject(mxtl::RefPtr<VmObject> parent)
     : lock_(parent ? parent->lock_ref() : local_lock_),
       parent_(mxtl::move(parent)) {
     LTRACEF("%p\n", this);
+
+    // Add ourself to the global VMO list, newer VMOs at the end.
+    {
+        AutoLock a(&all_vmos_lock_);
+        all_vmos_.push_back(this);
+    }
 }
 
 VmObject::~VmObject() {
@@ -50,6 +59,13 @@ VmObject::~VmObject() {
 
     DEBUG_ASSERT(mapping_list_.is_empty());
     DEBUG_ASSERT(children_list_.is_empty());
+
+    // Remove ourself from the global VMO list.
+    {
+        AutoLock a(&all_vmos_lock_);
+        DEBUG_ASSERT(global_list_state_.InContainer() == true);
+        all_vmos_.erase(*this);
+    }
 }
 
 void VmObject::get_name(char *out_name, size_t len) const {
@@ -116,6 +132,17 @@ uint32_t VmObject::num_mappings() const {
     canary_.Assert();
     AutoLock a(&lock_);
     return mapping_list_len_;
+}
+
+bool VmObject::IsMappedByUser() const {
+    canary_.Assert();
+    AutoLock a(&lock_);
+    for (const auto& m : mapping_list_) {
+        if (m.aspace()->is_user()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 uint32_t VmObject::share_count() const {
@@ -212,7 +239,7 @@ static int cmd_vm_object(int argc, const cmd_args* argv, uint32_t flags) {
         printf("usage:\n");
         printf("%s dump <address>\n", argv[0].str);
         printf("%s dump_pages <address>\n", argv[0].str);
-        return ERR_INTERNAL;
+        return MX_ERR_INTERNAL;
     }
 
     if (!strcmp(argv[1].str, "dump")) {
@@ -234,7 +261,7 @@ static int cmd_vm_object(int argc, const cmd_args* argv, uint32_t flags) {
         goto usage;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 STATIC_COMMAND_START

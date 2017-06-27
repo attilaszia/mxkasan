@@ -7,21 +7,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <threads.h>
 
-//#include <ddk/protocol/hidbus.h>
 #include <hid/hid.h>
 #include <hid/usages.h>
+
 #include <magenta/device/input.h>
 #include <magenta/syscalls.h>
-#include <mxio/io.h>
-#include <mxio/watcher.h>
+
 #include <port/port.h>
 
-#define VCDEBUG 1
-
 #include "keyboard.h"
-#include "vcdebug.h"
 
 #define LOW_REPEAT_KEY_FREQ 250000000
 #define HIGH_REPEAT_KEY_FREQ 50000000
@@ -148,7 +143,7 @@ static mx_status_t vc_timer_cb(port_handler_t* ph, mx_signals_t signals, uint32_
     // We've set this up as repeating so we always
     // return an error to avoid the auto-re-arm behaviour
     // of the port library
-    return ERR_STOP;
+    return MX_ERR_STOP;
 }
 
 static mx_status_t vc_input_cb(port_fd_handler_t* fh, unsigned pollevt, uint32_t evt) {
@@ -156,18 +151,18 @@ static mx_status_t vc_input_cb(port_fd_handler_t* fh, unsigned pollevt, uint32_t
     ssize_t r;
 
     if (!(pollevt & POLLIN)) {
-        r = ERR_PEER_CLOSED;
+        r = MX_ERR_PEER_CLOSED;
     } else {
         memcpy(vi->previous_report_buf, vi->report_buf, sizeof(vi->report_buf));
         r = read(vi->fd, vi->report_buf, sizeof(vi->report_buf));
     }
     if (r <= 0) {
         vc_input_destroy(vi);
-        return ERR_STOP;
+        return MX_ERR_STOP;
     }
     if ((size_t)(r) != sizeof(vi->report_buf)) {
         vi->repeat_interval = MX_TIME_INFINITE;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     if (vc_input_process(vi, vi->report_buf) && vi->repeat_enabled) {
@@ -176,14 +171,14 @@ static mx_status_t vc_input_cb(port_fd_handler_t* fh, unsigned pollevt, uint32_t
     } else {
         vi->repeat_interval = MX_TIME_INFINITE;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 #endif
 
 mx_status_t vc_input_create(vc_input_t** out, keypress_handler_t handler, int fd) {
     vc_input_t* vi = reinterpret_cast<vc_input_t*>(calloc(1, sizeof(vc_input_t)));
     if (vi == NULL) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     vi->fd = fd;
@@ -229,7 +224,7 @@ mx_status_t vc_input_create(vc_input_t** out, keypress_handler_t handler, int fd
 #endif
 
     *out = vi;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 #if !BUILD_FOR_TEST
@@ -240,7 +235,7 @@ mx_status_t new_input_device(int fd, keypress_handler_t handler) {
     if ((rc < 0) || (proto != INPUT_PROTO_KBD)) {
         // skip devices that aren't keyboards
         close(fd);
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     mx_status_t r;

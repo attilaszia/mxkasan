@@ -3,330 +3,53 @@
 // found in the LICENSE file.
 
 #include <assert.h>
-#include <dirent.h>
 #include <fcntl.h>
-#include <gfx/gfx.h>
-#include <hid/usages.h>
-#include <magenta/device/console.h>
-#include <magenta/device/display.h>
-#include <magenta/listnode.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/param.h>
-#include <sys/stat.h>
-#include <threads.h>
 #include <unistd.h>
 
-#include <mxio/io.h>
-#include <mxio/watcher.h>
-#include <mxtl/auto_lock.h>
+#include <launchpad/launchpad.h>
 
-#include <magenta/atomic.h>
+#include <magenta/device/pty.h>
+#include <magenta/device/vfs.h>
+#include <magenta/device/display.h>
+#include <magenta/listnode.h>
 #include <magenta/process.h>
+#include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/log.h>
 #include <magenta/syscalls/object.h>
 
-#if !BUILD_FOR_TEST
-#include <launchpad/launchpad.h>
-#include <magenta/device/pty.h>
-#include <magenta/device/vfs.h>
-#include <magenta/processargs.h>
-#include <port/port.h>
+#include <mxio/io.h>
 #include <mxio/util.h>
-#endif
+#include <mxio/watcher.h>
 
-#define VCDEBUG 1
+#include <port/port.h>
 
-#include "keyboard-vt100.h"
-#include "keyboard.h"
 #include "vc.h"
-#include "vcdebug.h"
 
-static struct list_node g_vc_list = LIST_INITIAL_VALUE(g_vc_list);
-static unsigned g_vc_count = 0;
-static vc_t* g_active_vc;
-static unsigned g_active_vc_index;
+port_t port;
+static port_handler_t ownership_ph;
+static port_handler_t log_ph;
+static port_handler_t new_vc_ph;
+static port_handler_t input_ph;
 
-static mx_status_t vc_set_active(int num, vc_t* vc);
-
-static void vc_toggle_framebuffer();
-
-
-// Process key sequences that affect the console (scrolling, switching
-// console, etc.) without sending input to the current console.  This
-// returns whether this key press was handled.
-static bool vc_handle_control_keys(uint8_t keycode, int modifiers) {
-    switch (keycode) {
-    case HID_USAGE_KEY_F1 ... HID_USAGE_KEY_F10:
-        if (modifiers & MOD_ALT) {
-            vc_set_active(keycode - HID_USAGE_KEY_F1, NULL);
-            return true;
-        }
-        break;
-
-    case HID_USAGE_KEY_TAB:
-        if (modifiers & MOD_ALT) {
-            if (modifiers & MOD_SHIFT) {
-                vc_set_active(g_active_vc_index == 0 ? g_vc_count - 1 : g_active_vc_index - 1, NULL);
-            } else {
-                vc_set_active(g_active_vc_index == g_vc_count - 1 ? 0 : g_active_vc_index + 1, NULL);
-            }
-            return true;
-        }
-        break;
-
-    case HID_USAGE_KEY_UP:
-        if (modifiers & MOD_ALT) {
-            vc_scroll_viewport(g_active_vc, -1);
-            return true;
-        }
-        break;
-    case HID_USAGE_KEY_DOWN:
-        if (modifiers & MOD_ALT) {
-            vc_scroll_viewport(g_active_vc, 1);
-            return true;
-        }
-        break;
-    case HID_USAGE_KEY_PAGEUP:
-        if (modifiers & MOD_SHIFT) {
-            vc_scroll_viewport(g_active_vc, -(vc_rows(g_active_vc) / 2));
-            return true;
-        }
-        break;
-    case HID_USAGE_KEY_PAGEDOWN:
-        if (modifiers & MOD_SHIFT) {
-            vc_scroll_viewport(g_active_vc, vc_rows(g_active_vc) / 2);
-            return true;
-        }
-        break;
-    case HID_USAGE_KEY_HOME:
-        if (modifiers & MOD_SHIFT) {
-            vc_scroll_viewport_top(g_active_vc);
-            return true;
-        }
-        break;
-    case HID_USAGE_KEY_END:
-        if (modifiers & MOD_SHIFT) {
-            vc_scroll_viewport_bottom(g_active_vc);
-            return true;
-        }
-        break;
-    }
-    return false;
-}
-
-// Process key sequences that affect the low-level control of the system
-// (switching display ownership, rebooting).  This returns whether this key press
-// was handled.
-static bool vc_handle_device_control_keys(uint8_t keycode, int modifiers){
-    switch (keycode) {
-    case HID_USAGE_KEY_DELETE:
-        // Provide a CTRL-ALT-DEL reboot sequence
-        if ((modifiers & MOD_CTRL) && (modifiers & MOD_ALT)) {
-            int fd;
-            // Send the reboot command to devmgr
-            if ((fd = open("/dev/misc/dmctl", O_WRONLY)) >= 0) {
-                write(fd, "reboot", strlen("reboot"));
-                close(fd);
-            }
-            return true;
-        }
-        break;
-
-    case HID_USAGE_KEY_ESC:
-        if (modifiers & MOD_ALT) {
-            vc_toggle_framebuffer();
-            return true;
-        }
-        break;
-    }
-    return false;
-}
-
-static mx_status_t vc_set_active(int num, vc_t* to_vc) {
-    vc_t* vc = NULL;
-    int i = 0;
-    list_for_every_entry (&g_vc_list, vc, vc_t, node) {
-        if ((num == i) || (to_vc == vc)) {
-            if (vc == g_active_vc) {
-                return NO_ERROR;
-            }
-            if (g_active_vc) {
-                g_active_vc->active = false;
-                g_active_vc->flags &= ~VC_FLAG_HASOUTPUT;
-            }
-            vc->active = true;
-            vc->flags &= ~VC_FLAG_HASOUTPUT;
-            g_active_vc = vc;
-            g_active_vc_index = i;
-            vc_full_repaint(vc);
-            vc_render(vc);
-            return NO_ERROR;
-        }
-        i++;
-    }
-    return ERR_NOT_FOUND;
-}
-
-static int status_width = 0;
-
-void vc_status_update() {
-    vc_t* vc = NULL;
-    unsigned i = 0;
-    int x = 0;
-
-    int w = status_width / (g_vc_count + 1);
-    if (w < MIN_TAB_WIDTH) {
-        w = MIN_TAB_WIDTH;
-    } else if (w > MAX_TAB_WIDTH) {
-        w = MAX_TAB_WIDTH;
-    }
-
-    char tmp[w];
-
-    vc_status_clear();
-    list_for_every_entry (&g_vc_list, vc, vc_t, node) {
-        unsigned fg;
-        if (vc->active) {
-            fg = STATUS_COLOR_ACTIVE;
-        } else if (vc->flags & VC_FLAG_HASOUTPUT) {
-            fg = STATUS_COLOR_UPDATED;
-        } else {
-            fg = STATUS_COLOR_DEFAULT;
-        }
-
-        int lines = vc_get_scrollback_lines(vc);
-        char L = (lines > 0) && (-vc->viewport_y < lines) ? '<' : '[';
-        char R = (vc->viewport_y < 0) ? '>' : ']';
-
-        snprintf(tmp, w, "%c%u%c %s", L, i, R, vc->title);
-        vc_status_write(x, fg, tmp);
-        x += w;
-        i++;
-    }
-}
-
-static void vc_destroy(vc_t* vc) {
-    list_delete(&vc->node);
-    g_vc_count -= 1;
-
-    if (vc->active) {
-        g_active_vc = NULL;
-        if (g_active_vc_index >= g_vc_count) {
-            g_active_vc_index = g_vc_count - 1;
-        }
-        vc_set_active(g_active_vc_index, NULL);
-    } else if (g_active_vc) {
-        vc_full_repaint(g_active_vc);
-        vc_render(g_active_vc);
-    }
-
-    vc_free(vc);
-}
-
-ssize_t vc_write(vc_t* vc, const void* buf, size_t count, mx_off_t off) {
-    vc->invy0 = vc_rows(vc) + 1;
-    vc->invy1 = -1;
-    const uint8_t* str = (const uint8_t*)buf;
-    for (size_t i = 0; i < count; i++) {
-        vc->textcon.putc(&vc->textcon, str[i]);
-    }
-    if (vc->invy1 >= 0) {
-        int rows = vc_rows(vc);
-        // Adjust for the current viewport position.  Convert
-        // console-relative row numbers to screen-relative row numbers.
-        int invalidate_y0 = MIN(vc->invy0 - vc->viewport_y, rows);
-        int invalidate_y1 = MIN(vc->invy1 - vc->viewport_y, rows);
-        vc_gfx_invalidate(vc, 0, invalidate_y0,
-                          vc->columns, invalidate_y1 - invalidate_y0);
-    }
-    if (!(vc->flags & VC_FLAG_HASOUTPUT) && !vc->active) {
-        vc->flags |= VC_FLAG_HASOUTPUT;
-        vc_status_update();
-        vc_gfx_invalidate_status();
-    }
-    return count;
-}
-
-// Create a new vc_t and add it to the console list.
-static mx_status_t vc_create(vc_t** vc_out) {
-    mx_status_t status;
-    vc_t* vc;
-    if ((status = vc_alloc(&vc)) < 0) {
-        return status;
-    }
-
-    // add to the vc list
-    list_add_tail(&g_vc_list, &vc->node);
-    g_vc_count++;
-
-    // make this the active vc if it's the first one
-    if (!g_active_vc) {
-        vc_set_active(-1, vc);
-    } else {
-        vc_render(g_active_vc);
-    }
-
-    *vc_out = vc;
-    return NO_ERROR;
-}
-
-#if BUILD_FOR_TEST
-static void vc_toggle_framebuffer() {
-}
-#else
-
-// The entire vc_*() world is single threaded.
-// All the threads below this point acquire the g_vc_lock
-// before calling into the vc world
-//
-// TODO: convert this pile of threads into a single-threaded,
-// ports-based event handler and remove g_vc_lock entirely.
-
-static mtx_t g_vc_lock = MTX_INIT;
-
-// remember whether the virtual console controls the display
-static bool g_vc_owns_display = true;
-
-static int g_fb_fd;
-
-static void vc_toggle_framebuffer() {
-    uint32_t n = g_vc_owns_display ? 1 : 0;
-    ioctl_display_set_owner(g_fb_fd, &n);
-}
-
-static void handle_key_press(uint8_t keycode, int modifiers) {
-    mxtl::AutoLock lock(&g_vc_lock);
-
-    // Handle vc-level control keys
-    if (vc_handle_device_control_keys(keycode, modifiers))
-        return;
-
-    // Handle other keys only if we own the display
-    if (!g_vc_owns_display)
-        return;
-
-    // Handle other control keys
-    if (vc_handle_control_keys(keycode, modifiers))
-        return;
-
-    vc_t* vc = g_active_vc;
-    char output[4];
-    uint32_t length = hid_key_to_vt100_code(
-        keycode, modifiers, vc->keymap, output, sizeof(output));
-    if (length > 0) {
-        if (vc->fd >= 0) {
-            write(vc->fd, output, length);
-        }
-        vc_scroll_viewport_bottom(vc);
-    }
-}
+static int input_dir_fd;
 
 static vc_t* log_vc;
 static mx_koid_t proc_koid;
+
+static int g_fb_fd = -1;
+
+// remember whether the virtual console controls the display
+bool g_vc_owns_display = true;
+
+void vc_toggle_framebuffer() {
+    uint32_t n = g_vc_owns_display ? 1 : 0;
+    ioctl_display_set_owner(g_fb_fd, &n);
+}
 
 static mx_status_t log_reader_cb(port_handler_t* ph, mx_signals_t signals, uint32_t evt) {
     char buf[MX_LOG_RECORD_MAX];
@@ -334,8 +57,8 @@ static mx_status_t log_reader_cb(port_handler_t* ph, mx_signals_t signals, uint3
     mx_status_t status;
     for (;;) {
         if ((status = mx_log_read(ph->handle, MX_LOG_RECORD_MAX, rec, 0)) < 0) {
-            if (status == ERR_SHOULD_WAIT) {
-                return NO_ERROR;
+            if (status == MX_ERR_SHOULD_WAIT) {
+                return MX_OK;
             }
             break;
         }
@@ -348,29 +71,19 @@ static mx_status_t log_reader_cb(port_handler_t* ph, mx_signals_t signals, uint3
                  (int)(rec->timestamp / 1000000000ULL),
                  (int)((rec->timestamp / 1000000ULL) % 1000ULL),
                  rec->pid, rec->tid);
-        {
-            mxtl::AutoLock lock(&g_vc_lock);
-            vc_write(log_vc, tmp, strlen(tmp), 0);
-            vc_write(log_vc, rec->data, rec->datalen, 0);
-            if ((rec->datalen == 0) ||
-                (rec->data[rec->datalen - 1] != '\n')) {
-                vc_write(log_vc, "\n", 1, 0);
-            }
+        vc_write(log_vc, tmp, strlen(tmp), 0);
+        vc_write(log_vc, rec->data, rec->datalen, 0);
+        if ((rec->datalen == 0) ||
+            (rec->data[rec->datalen - 1] != '\n')) {
+            vc_write(log_vc, "\n", 1, 0);
         }
     }
 
     const char* oops = "<<LOG ERROR>>\n";
-    mxtl::AutoLock lock(&g_vc_lock);
     vc_write(log_vc, oops, strlen(oops), 0);
 
     return status;
 }
-
-port_t port;
-static port_handler_t ownership_ph;
-static port_handler_t log_ph;
-static port_handler_t new_vc_ph;
-static port_handler_t input_ph;
 
 static mx_status_t launch_shell(vc_t* vc, int fd) {
     const char* args[] = { "/boot/bin/sh" };
@@ -380,7 +93,7 @@ static mx_status_t launch_shell(vc_t* vc, int fd) {
     launchpad_load_from_file(lp, args[0]);
     launchpad_set_args(lp, 1, args);
     launchpad_transfer_fd(lp, fd, MXIO_FLAG_USE_FOR_STDIO | 0);
-    launchpad_clone(lp, LP_CLONE_MXIO_ROOT | LP_CLONE_ENVIRON | LP_CLONE_DEFAULT_JOB);
+    launchpad_clone(lp, LP_CLONE_MXIO_NAMESPACE | LP_CLONE_ENVIRON | LP_CLONE_DEFAULT_JOB);
 
     const char* errmsg;
     mx_status_t r;
@@ -391,7 +104,6 @@ static mx_status_t launch_shell(vc_t* vc, int fd) {
 }
 
 static void session_destroy(vc_t* vc) {
-    mxtl::AutoLock lock(&g_vc_lock);
     if (vc->fd >= 0) {
         port_fd_handler_done(&vc->fh);
         // vc_destroy() closes the fd
@@ -414,13 +126,10 @@ static mx_status_t session_io_cb(port_fd_handler_t* fh, unsigned pollevt, uint32
                 break;
             }
             count += r;
-            {
-                mxtl::AutoLock lock(&g_vc_lock);
-                vc_write(vc, data, r, 0);
-            }
+            vc_write(vc, data, r, 0);
         }
         if (count) {
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
@@ -438,13 +147,13 @@ static mx_status_t session_io_cb(port_fd_handler_t* fh, unsigned pollevt, uint32
             if(launch_shell(vc, fd) < 0) {
                 goto fail;
             }
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
 fail:
     session_destroy(vc);
-    return ERR_STOP;
+    return MX_ERR_STOP;
 }
 
 static mx_status_t session_create(vc_t** out, int* out_fd, bool make_active) {
@@ -454,7 +163,7 @@ static mx_status_t session_create(vc_t** out, int* out_fd, bool make_active) {
     int retry = 30;
     while ((fd = open("/dev/misc/ptmx", O_RDWR | O_NONBLOCK)) < 0) {
         if (--retry == 0) {
-            return ERR_IO;
+            return MX_ERR_IO;
         }
         usleep(100000);
     }
@@ -462,29 +171,26 @@ static mx_status_t session_create(vc_t** out, int* out_fd, bool make_active) {
     int client_fd = openat(fd, "0", O_RDWR);
     if (client_fd < 0) {
         close(fd);
-        return ERR_IO;
+        return MX_ERR_IO;
     }
 
     vc_t* vc;
-    {
-        mxtl::AutoLock lock(&g_vc_lock);
-        if (vc_create(&vc)) {
-            close(fd);
-            close(client_fd);
-            return ERR_INTERNAL;
-        }
-        mx_status_t r;
-        if ((r = port_fd_handler_init(&vc->fh, fd, POLLIN | POLLRDHUP | POLLHUP)) < 0) {
-            vc_destroy(vc);
-            close(fd);
-            close(client_fd);
-            return r;
-        }
-        vc->fd = fd;
+    if (vc_create(&vc)) {
+        close(fd);
+        close(client_fd);
+        return MX_ERR_INTERNAL;
+    }
+    mx_status_t r;
+    if ((r = port_fd_handler_init(&vc->fh, fd, POLLIN | POLLRDHUP | POLLHUP)) < 0) {
+        vc_destroy(vc);
+        close(fd);
+        close(client_fd);
+        return r;
+    }
+    vc->fd = fd;
 
-        if (make_active) {
-            vc_set_active(-1, vc);
-        }
+    if (make_active) {
+        vc_set_active(-1, vc);
     }
 
     pty_window_size_t wsz = {
@@ -497,7 +203,7 @@ static mx_status_t session_create(vc_t** out, int* out_fd, bool make_active) {
 
     *out = vc;
     *out_fd = client_fd;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static void start_shell(bool make_active) {
@@ -521,17 +227,17 @@ static mx_status_t new_vc_cb(port_handler_t* ph, mx_signals_t signals, uint32_t 
     mx_handle_t h;
     uint32_t dcount, hcount;
     if (mx_channel_read(ph->handle, 0, NULL, &h, 0, 1, &dcount, &hcount) < 0) {
-        return NO_ERROR;
+        return MX_OK;
     }
     if (hcount != 1) {
-        return NO_ERROR;
+        return MX_OK;
     }
 
     vc_t* vc;
     int fd;
     if (session_create(&vc, &fd, true) < 0) {
         mx_handle_close(h);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     mx_handle_t handles[MXIO_MAX_HANDLES];
@@ -547,10 +253,8 @@ static mx_status_t new_vc_cb(port_handler_t* ph, mx_signals_t signals, uint32_t 
     }
 
     mx_handle_close(h);
-    return NO_ERROR;
+    return MX_OK;
 }
-
-static int input_dir_fd;
 
 static void input_dir_event(unsigned evt, const char* name) {
     if ((evt != VFS_WATCH_EVT_EXISTING) && (evt != VFS_WATCH_EVT_ADDED)) {
@@ -569,7 +273,7 @@ static void input_dir_event(unsigned evt, const char* name) {
 
 static mx_status_t input_cb(port_handler_t* ph, mx_signals_t signals, uint32_t evt) {
     if (!(signals & MX_CHANNEL_READABLE)) {
-        return ERR_STOP;
+        return MX_ERR_STOP;
     }
 
     // Buffer contains events { Opcode, Len, Name[Len] }
@@ -578,7 +282,7 @@ static mx_status_t input_cb(port_handler_t* ph, mx_signals_t signals, uint32_t e
     uint8_t buf[VFS_WATCH_MSG_MAX + 1];
     uint32_t len;
     if (mx_channel_read(ph->handle, 0, buf, NULL, sizeof(buf) - 1, 0, &len, NULL) < 0) {
-        return ERR_STOP;
+        return MX_ERR_STOP;
     }
 
     uint8_t* msg = buf;
@@ -594,14 +298,12 @@ static mx_status_t input_cb(port_handler_t* ph, mx_signals_t signals, uint32_t e
         input_dir_event(event, (char*) msg);
         msg[namelen] = tmp;
         msg += namelen;
-        len -= namelen;
+        len -= (namelen + 2u);
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t ownership_ph_cb(port_handler_t* ph, mx_signals_t signals, uint32_t evt) {
-    mxtl::AutoLock lock(&g_vc_lock);
-
     // If we owned it, we've been notified of losing it, or the other way 'round
     g_vc_owns_display = !g_vc_owns_display;
 
@@ -616,7 +318,7 @@ static mx_status_t ownership_ph_cb(port_handler_t* ph, mx_signals_t signals, uin
         ph->waitfor = MX_USER_SIGNAL_0;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int main(int argc, char** argv) {
@@ -640,17 +342,17 @@ int main(int argc, char** argv) {
     g_fb_fd = fd;
 
     // create initial console for debug log
-    if (vc_create(&log_vc) != NO_ERROR) {
+    if (vc_create(&log_vc) != MX_OK) {
         return -1;
     }
-    status_width = log_vc->columns;
+    g_status_width = log_vc->columns;
     snprintf(log_vc->title, sizeof(log_vc->title), "debuglog");
 
     // Get our process koid so the log reader can
     // filter out our own debug messages from the log
     mx_info_handle_basic_t info;
     if (mx_object_get_info(mx_process_self(), MX_INFO_HANDLE_BASIC, &info,
-                           sizeof(info), NULL, NULL) == NO_ERROR) {
+                           sizeof(info), NULL, NULL) == MX_OK) {
         proc_koid = info.koid;
     }
 
@@ -674,8 +376,8 @@ int main(int argc, char** argv) {
         vfs_watch_dir_t wd;
         wd.mask = VFS_WATCH_MASK_ALL;
         wd.options = 0;
-        if (mx_channel_create(0, &wd.channel, &input_ph.handle) == NO_ERROR) {
-            if ((ioctl_vfs_watch_dir_v2(input_dir_fd, &wd)) == NO_ERROR) {
+        if (mx_channel_create(0, &wd.channel, &input_ph.handle) == MX_OK) {
+            if ((ioctl_vfs_watch_dir_v2(input_dir_fd, &wd)) == MX_OK) {
                 input_ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
                 input_ph.func = input_cb;
                 port_wait(&port, &input_ph);
@@ -709,4 +411,3 @@ int main(int argc, char** argv) {
     printf("vc: port failure: %d\n", r);
     return -1;
 }
-#endif

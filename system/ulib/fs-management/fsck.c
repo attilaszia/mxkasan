@@ -17,26 +17,26 @@
 #include <mxio/util.h>
 #include <mxio/vfs.h>
 
-static mx_status_t fsck_minfs(const char* devicepath, const fsck_options_t* options,
-                              LaunchCallback cb) {
+static mx_status_t fsck_mxfs(const char* devicepath, const fsck_options_t* options,
+                              LaunchCallback cb, const char* cmdpath) {
     mx_handle_t hnd[MXIO_MAX_HANDLES * 2];
     uint32_t ids[MXIO_MAX_HANDLES * 2];
     size_t n = 0;
     int device_fd;
     if ((device_fd = open(devicepath, O_RDWR)) < 0) {
         fprintf(stderr, "Failed to open device\n");
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     mx_status_t status;
     if ((status = mxio_transfer_fd(device_fd, FS_FD_BLOCKDEVICE, hnd + n, ids + n)) <= 0) {
         fprintf(stderr, "Failed to access device handle\n");
-        return status != 0 ? status : ERR_BAD_STATE;
+        return status != 0 ? status : MX_ERR_BAD_STATE;
     }
     n += status;
 
     const char** argv = calloc(sizeof(char*), (2 + NUM_FSCK_OPTIONS));
     size_t argc = 0;
-    argv[argc++] = "/boot/bin/minfs";
+    argv[argc++] = cmdpath;
     if (options->verbose) {
         argv[argc++] = "-v";
     }
@@ -71,10 +71,12 @@ mx_status_t fsck(const char* devicepath, disk_format_t df,
                  const fsck_options_t* options, LaunchCallback cb) {
     switch (df) {
     case DISK_FORMAT_MINFS:
-        return fsck_minfs(devicepath, options, cb);
+        return fsck_mxfs(devicepath, options, cb, "boot/bin/minfs");
     case DISK_FORMAT_FAT:
         return fsck_fat(devicepath, options, cb);
+    case DISK_FORMAT_BLOBFS:
+        return fsck_mxfs(devicepath, options, cb, "boot/bin/blobstore");
     default:
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 }

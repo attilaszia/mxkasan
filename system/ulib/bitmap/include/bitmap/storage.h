@@ -14,7 +14,7 @@
 #include <mxtl/array.h>
 #include <mxtl/macros.h>
 
-#ifdef __Fuchsia__
+#if !defined _KERNEL && defined __Fuchsia__
 #include <mx/vmo.h>
 #include <magenta/syscalls.h>
 #endif
@@ -24,23 +24,40 @@ namespace bitmap {
 class DefaultStorage {
 public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(DefaultStorage);
-    DefaultStorage() {};
+    DefaultStorage() = default;
 
     mx_status_t Allocate(size_t size) {
         AllocChecker ac;
-        auto arr = new (&ac) char[size];
+        auto arr = new (&ac) uint8_t[size];
         if (!ac.check()) {
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
         storage_.reset(arr, size);
-        return NO_ERROR;
+        return MX_OK;
     }
-    void* GetData() const { return storage_.get(); }
+    void* GetData() { return storage_.get(); }
+    const void* GetData() const { return storage_.get(); }
 private:
-    mxtl::Array<char> storage_;
+    mxtl::Array<uint8_t> storage_;
 };
 
-#ifdef __Fuchsia__
+template <size_t N>
+class FixedStorage {
+public:
+    DISALLOW_COPY_ASSIGN_AND_MOVE(FixedStorage);
+    FixedStorage() = default;
+
+    mx_status_t Allocate(size_t size) {
+        MX_ASSERT(size <= N);
+        return MX_OK;
+    }
+    void* GetData() { return storage_; }
+    const void* GetData() const { return storage_; }
+private:
+    size_t storage_[(N + sizeof(size_t) - 1) / sizeof(size_t)];
+};
+
+#if !defined _KERNEL && defined __Fuchsia__
 class VmoStorage {
 public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(VmoStorage);
@@ -57,18 +74,19 @@ public:
         Release();
         size_ = size;
         mx_status_t status;
-        if ((status = mx::vmo::create(size_, 0, &vmo_)) != NO_ERROR) {
+        if ((status = mx::vmo::create(size_, 0, &vmo_)) != MX_OK) {
             return status;
         } else if ((status = mx_vmar_map(mx_vmar_root_self(), 0, vmo_.get(), 0,
                                          size_, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
-                                         &mapped_addr_)) != NO_ERROR) {
+                                         &mapped_addr_)) != MX_OK) {
             vmo_.reset();
             return status;
         }
-        return NO_ERROR;
+        return MX_OK;
     }
 
-    void* GetData() const { MX_DEBUG_ASSERT(mapped_addr_ != 0); return (void*) mapped_addr_; }
+    void* GetData() { MX_DEBUG_ASSERT(mapped_addr_ != 0); return (void*) mapped_addr_; }
+    const void* GetData() const { MX_DEBUG_ASSERT(mapped_addr_ != 0); return (void*) mapped_addr_; }
     mx_handle_t GetVmo() const { MX_DEBUG_ASSERT(mapped_addr_ != 0); return vmo_.get(); }
 private:
     void Release() {

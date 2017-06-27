@@ -68,11 +68,11 @@ mxtl::RefPtr<VmObject> VmObjectPaged::Create(uint32_t pmm_alloc_flags, uint64_t 
         return nullptr;
 
     auto err = vmo->Resize(size);
-    if (err == ERR_NO_MEMORY)
+    if (err == MX_ERR_NO_MEMORY)
         return nullptr;
     // Other kinds of failures are not handled yet.
-    DEBUG_ASSERT(err == NO_ERROR);
-    if (err != NO_ERROR)
+    DEBUG_ASSERT(err == MX_OK);
+    if (err != MX_OK)
         return nullptr;
 
     return vmo;
@@ -86,7 +86,7 @@ status_t VmObjectPaged::CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
     AllocChecker ac;
     auto vmo = mxtl::AdoptRef<VmObjectPaged>(new (&ac) VmObjectPaged(pmm_alloc_flags_, mxtl::WrapRefPtr(this)));
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     AutoLock a(&lock_);
 
@@ -95,12 +95,12 @@ status_t VmObjectPaged::CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
 
     // set the new clone's size
     auto status = vmo->ResizeLocked(size);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     // set the offset with the parent
     status = vmo->SetParentOffsetLocked(offset);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     if (copy_name)
@@ -108,11 +108,14 @@ status_t VmObjectPaged::CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
 
     *clone_vmo = mxtl::move(vmo);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void VmObjectPaged::Dump(uint depth, bool verbose) {
     canary_.Assert();
+
+    // This can grab our lock.
+    uint64_t parent_id = parent_user_id();
 
     AutoLock a(&lock_);
 
@@ -122,7 +125,9 @@ void VmObjectPaged::Dump(uint depth, bool verbose) {
     for (uint i = 0; i < depth; ++i) {
         printf("  ");
     }
-    printf("object %p size %#" PRIx64 " pages %zu ref %d\n", this, size_, count, ref_count_debug());
+    printf("vmo %p/k%" PRIu64 " size %#" PRIx64
+           " pages %zu ref %d parent k%" PRIu64 "\n",
+           this, user_id_, size_, count, ref_count_debug(), parent_id);
 
     if (verbose) {
         auto f = [depth](const auto p, uint64_t offset) {
@@ -169,16 +174,16 @@ status_t VmObjectPaged::AddPageLocked(vm_page_t* p, uint64_t offset) {
     DEBUG_ASSERT(p);
 
     if (offset >= size_)
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     status_t err = page_list_.AddPage(p, offset);
-    if (err != NO_ERROR)
+    if (err != MX_OK)
         return err;
 
     // other mappings may have covered this offset into the vmo, so unmap those ranges
     RangeChangeUpdateLocked(offset, PAGE_SIZE);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mxtl::RefPtr<VmObject> VmObjectPaged::CreateFromROData(const void* data, size_t size) {
@@ -235,7 +240,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
     DEBUG_ASSERT(lock_.IsHeld());
 
     if (offset >= size_)
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     vm_page_t* p;
     paddr_t pa;
@@ -247,7 +252,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
             *page_out = p;
         if (pa_out)
             *pa_out = vm_page_to_paddr(p);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     __UNUSED char pf_string[5];
@@ -264,7 +269,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
         uint parent_pf_flags = pf_flags & ~(VMM_PF_FLAG_FAULT_MASK);
 
         status_t status = parent_->GetPageLocked(parent_offset.ValueOrDie(), parent_pf_flags, &p, &pa);
-        if (status == NO_ERROR) {
+        if (status == MX_OK) {
             // we have a page from them. if we're read-only faulting, return that page so they can map
             // or read from it directly
             if ((pf_flags & VMM_PF_FLAG_WRITE) == 0) {
@@ -275,14 +280,14 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
 
                 LTRACEF("read only faulting in page %p, pa %#" PRIxPTR " from parent\n", p, pa);
 
-                return NO_ERROR;
+                return MX_OK;
             }
 
             // if we're write faulting, we need to clone it and return the new page
             paddr_t pa_clone;
             vm_page_t* p_clone = pmm_alloc_page(pmm_alloc_flags_, &pa_clone);
             if (!p_clone)
-                return ERR_NO_MEMORY;
+                return MX_ERR_NO_MEMORY;
 
             p_clone->state = VM_PAGE_STATE_OBJECT;
 
@@ -296,7 +301,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
 
             // add the new page and return it
             status = AddPageLocked(p_clone, offset);
-            DEBUG_ASSERT(status == NO_ERROR);
+            DEBUG_ASSERT(status == MX_OK);
 
             LTRACEF("copy-on-write faulted in page %p, pa %#" PRIxPTR " copied from %p, pa %#" PRIxPTR "\n",
                     p, pa, p_clone, pa_clone);
@@ -306,13 +311,13 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
             if (pa_out)
                 *pa_out = pa_clone;
 
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
     // if we're not being asked to sw or hw fault in the page, return not found
     if ((pf_flags & VMM_PF_FLAG_FAULT_MASK) == 0)
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
 
     // if we're read faulting, we don't already have a page, and the parent doesn't have it,
     // return the single global zero page
@@ -322,13 +327,13 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
             *page_out = vm_get_zero_page();
         if (pa_out)
             *pa_out = vm_get_zero_page_paddr();
-        return NO_ERROR;
+        return MX_OK;
     }
 
     // allocate a page
     p = pmm_alloc_page(pmm_alloc_flags_, &pa);
     if (!p)
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     p->state = VM_PAGE_STATE_OBJECT;
 
@@ -336,7 +341,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
     ZeroPage(pa);
 
     status_t status = AddPageLocked(p, offset);
-    DEBUG_ASSERT(status == NO_ERROR);
+    DEBUG_ASSERT(status == MX_OK);
 
     // other mappings may have covered this offset into the vmo, so unmap those ranges
     RangeChangeUpdateLocked(offset, PAGE_SIZE);
@@ -348,7 +353,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
     if (pa_out)
         *pa_out = pa;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t VmObjectPaged::CommitRange(uint64_t offset, uint64_t len, uint64_t* committed) {
@@ -363,11 +368,11 @@ status_t VmObjectPaged::CommitRange(uint64_t offset, uint64_t len, uint64_t* com
     // trim the size
     uint64_t new_len;
     if (!TrimRange(offset, len, size_, &new_len))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     // was in range, just zero length
     if (new_len == 0)
-        return NO_ERROR;
+        return MX_OK;
 
     // compute a page aligned end to do our searches in to make sure we cover all the pages
     uint64_t end = ROUNDUP_PAGE_SIZE(offset + new_len);
@@ -380,7 +385,7 @@ status_t VmObjectPaged::CommitRange(uint64_t offset, uint64_t len, uint64_t* com
             count++;
     }
     if (count == 0)
-        return NO_ERROR;
+        return MX_OK;
 
     // allocate count number of pages
     list_node page_list;
@@ -390,7 +395,7 @@ status_t VmObjectPaged::CommitRange(uint64_t offset, uint64_t len, uint64_t* com
     if (allocated < count) {
         LTRACEF("failed to allocate enough pages (asked for %zu, got %zu)\n", count, allocated);
         pmm_free(&page_list);
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     // unmap all of the pages in this range on all the mapping regions
@@ -411,7 +416,7 @@ status_t VmObjectPaged::CommitRange(uint64_t offset, uint64_t len, uint64_t* com
         ZeroPage(p);
 
         status_t status = page_list_.AddPage(p, o);
-        DEBUG_ASSERT(status == NO_ERROR);
+        DEBUG_ASSERT(status == MX_OK);
 
         if (committed)
             *committed += PAGE_SIZE;
@@ -422,7 +427,7 @@ status_t VmObjectPaged::CommitRange(uint64_t offset, uint64_t len, uint64_t* com
     // for now we only support committing as much as we were asked for
     DEBUG_ASSERT(!committed || *committed == count * PAGE_SIZE);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t VmObjectPaged::CommitRangeContiguous(uint64_t offset, uint64_t len, uint64_t* committed,
@@ -438,11 +443,11 @@ status_t VmObjectPaged::CommitRangeContiguous(uint64_t offset, uint64_t len, uin
     // trim the size
     uint64_t new_len;
     if (!TrimRange(offset, len, size_, &new_len))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     // was in range, just zero length
     if (new_len == 0)
-        return NO_ERROR;
+        return MX_OK;
 
     // compute a page aligned end to do our searches in to make sure we cover all the pages
     uint64_t end = ROUNDUP_PAGE_SIZE(offset + new_len);
@@ -465,7 +470,7 @@ status_t VmObjectPaged::CommitRangeContiguous(uint64_t offset, uint64_t len, uin
     if (allocated < count) {
         LTRACEF("failed to allocate enough pages (asked for %zu, got %zu)\n", count, allocated);
         pmm_free(&page_list);
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     DEBUG_ASSERT(list_length(&page_list) == allocated);
@@ -484,7 +489,7 @@ status_t VmObjectPaged::CommitRangeContiguous(uint64_t offset, uint64_t len, uin
         ZeroPage(p);
 
         auto status = page_list_.AddPage(p, o);
-        DEBUG_ASSERT(status == NO_ERROR);
+        DEBUG_ASSERT(status == MX_OK);
 
         if (committed)
             *committed += PAGE_SIZE;
@@ -493,7 +498,7 @@ status_t VmObjectPaged::CommitRangeContiguous(uint64_t offset, uint64_t len, uin
     // for now we only support committing as much as we were asked for
     DEBUG_ASSERT(!committed || *committed == count * PAGE_SIZE);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t VmObjectPaged::DecommitRange(uint64_t offset, uint64_t len, uint64_t* decommitted) {
@@ -508,11 +513,11 @@ status_t VmObjectPaged::DecommitRange(uint64_t offset, uint64_t len, uint64_t* d
     // trim the size
     uint64_t new_len;
     if (!TrimRange(offset, len, size_, &new_len))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     // was in range, just zero length
     if (new_len == 0)
-        return NO_ERROR;
+        return MX_OK;
 
     // figure the starting and ending page offset
     uint64_t start = ROUNDDOWN(offset, PAGE_SIZE);
@@ -530,13 +535,13 @@ status_t VmObjectPaged::DecommitRange(uint64_t offset, uint64_t len, uint64_t* d
     // iterate through the pages, freeing them
     while (start < end) {
         auto status = page_list_.FreePage(start);
-        if (status == NO_ERROR && decommitted) {
+        if (status == MX_OK && decommitted) {
             *decommitted += PAGE_SIZE;
         }
         start += PAGE_SIZE;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t VmObjectPaged::ResizeLocked(uint64_t s) {
@@ -547,7 +552,7 @@ status_t VmObjectPaged::ResizeLocked(uint64_t s) {
 
     // there's a max size to keep indexes within range
     if (s > MAX_SIZE)
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     // see if we're shrinking or expanding the vmo
     if (s < size_) {
@@ -585,7 +590,7 @@ status_t VmObjectPaged::ResizeLocked(uint64_t s) {
     // save bytewise size
     size_ = s;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t VmObjectPaged::Resize(uint64_t s) {
@@ -599,7 +604,7 @@ status_t VmObjectPaged::SetParentOffsetLocked(uint64_t offset) {
 
     // offset must be page aligned
     if (!IS_PAGE_ALIGNED(offset))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     // TODO: MG-692 make sure that the accumulated offset of the entire parent chain doesn't wrap 64bit space
 
@@ -607,11 +612,11 @@ status_t VmObjectPaged::SetParentOffsetLocked(uint64_t offset) {
     safeint::CheckedNumeric<uint64_t> end = offset;
     end += size_;
     if (!end.IsValid())
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     parent_offset_ = offset;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // perform some sort of copy in/out on a range of the object using a passed in lambda
@@ -628,7 +633,7 @@ status_t VmObjectPaged::ReadWriteInternal(uint64_t offset, size_t len, size_t* b
     // trim the size
     uint64_t new_len;
     if (!TrimRange(offset, len, size_, &new_len))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     // was in range, just zero length
     if (new_len == 0)
@@ -662,7 +667,7 @@ status_t VmObjectPaged::ReadWriteInternal(uint64_t offset, size_t len, size_t* b
         new_len -= tocopy;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t VmObjectPaged::Read(void* _ptr, uint64_t offset, size_t len, size_t* bytes_read) {
@@ -670,14 +675,14 @@ status_t VmObjectPaged::Read(void* _ptr, uint64_t offset, size_t len, size_t* by
     // test to make sure this is a kernel pointer
     if (!is_kernel_address(reinterpret_cast<vaddr_t>(_ptr))) {
         DEBUG_ASSERT_MSG(0, "non kernel pointer passed\n");
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // read routine that just uses a memcpy
     uint8_t* ptr = reinterpret_cast<uint8_t*>(_ptr);
     auto read_routine = [ptr](const void* src, size_t offset, size_t len) -> status_t {
         memcpy(ptr + offset, src, len);
-        return NO_ERROR;
+        return MX_OK;
     };
 
     return ReadWriteInternal(offset, len, bytes_read, false, read_routine);
@@ -688,14 +693,14 @@ status_t VmObjectPaged::Write(const void* _ptr, uint64_t offset, size_t len, siz
     // test to make sure this is a kernel pointer
     if (!is_kernel_address(reinterpret_cast<vaddr_t>(_ptr))) {
         DEBUG_ASSERT_MSG(0, "non kernel pointer passed\n");
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // write routine that just uses a memcpy
     const uint8_t* ptr = reinterpret_cast<const uint8_t*>(_ptr);
     auto write_routine = [ptr](void* dst, size_t offset, size_t len) -> status_t {
         memcpy(dst, ptr + offset, len);
-        return NO_ERROR;
+        return MX_OK;
     };
 
     return ReadWriteInternal(offset, len, bytes_written, true, write_routine);
@@ -705,13 +710,13 @@ status_t VmObjectPaged::Lookup(uint64_t offset, uint64_t len, uint pf_flags,
                                vmo_lookup_fn_t lookup_fn, void* context) {
     canary_.Assert();
     if (unlikely(len == 0))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     AutoLock a(&lock_);
 
     // verify that the range is within the object
     if (unlikely(!InRange(offset, len, size_)))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     uint64_t start_page_offset = ROUNDDOWN(offset, PAGE_SIZE);
     uint64_t end_page_offset = ROUNDUP(offset + len, PAGE_SIZE);
@@ -721,14 +726,14 @@ status_t VmObjectPaged::Lookup(uint64_t offset, uint64_t len, uint pf_flags,
         paddr_t pa;
         auto status = GetPageLocked(off, pf_flags, nullptr, &pa);
         if (status < 0)
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
 
         status = lookup_fn(context, off, index, pa);
         if (unlikely(status < 0))
             return status;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t VmObjectPaged::ReadUser(user_ptr<void> ptr, uint64_t offset, size_t len, size_t* bytes_read) {
@@ -736,7 +741,7 @@ status_t VmObjectPaged::ReadUser(user_ptr<void> ptr, uint64_t offset, size_t len
 
     // test to make sure this is a user pointer
     if (!ptr.is_user_address()) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // read routine that uses copy_to_user
@@ -753,7 +758,7 @@ status_t VmObjectPaged::WriteUser(user_ptr<const void> ptr, uint64_t offset, siz
 
     // test to make sure this is a user pointer
     if (!ptr.is_user_address()) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // write routine that uses copy_from_user
@@ -773,7 +778,7 @@ status_t VmObjectPaged::LookupUser(uint64_t offset, uint64_t len, user_ptr<paddr
     // compute the size of the table we'll need and make sure it fits in the user buffer
     uint64_t table_size = ((end_page_offset - start_page_offset) / PAGE_SIZE) * sizeof(paddr_t);
     if (unlikely(table_size > buffer_size))
-        return ERR_BUFFER_TOO_SMALL;
+        return MX_ERR_BUFFER_TOO_SMALL;
 
     auto copy_to_user = [](void* context, size_t offset, size_t index, paddr_t pa) -> status_t {
         user_ptr<paddr_t>* buffer = static_cast<user_ptr<paddr_t>*>(context);
@@ -804,12 +809,12 @@ status_t VmObjectPaged::CacheOp(const uint64_t start_offset, const uint64_t len,
     canary_.Assert();
 
     if (unlikely(len == 0))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     AutoLock a(&lock_);
 
     if (unlikely(!InRange(start_offset, len, size_)))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     const size_t end_offset = static_cast<size_t>(start_offset + len);
     size_t op_start_offset = static_cast<size_t>(start_offset);
@@ -830,7 +835,7 @@ status_t VmObjectPaged::CacheOp(const uint64_t start_offset, const uint64_t len,
         paddr_t pa;
         auto status = GetPageLocked(op_start_offset, 0, nullptr, &pa);
 
-        if (likely(status == NO_ERROR)) {
+        if (likely(status == MX_OK)) {
             // Convert the page address to a Kernel virtual address.
             const void* ptr = paddr_to_kvaddr(pa);
             const addr_t cache_op_addr = reinterpret_cast<addr_t>(ptr) + page_offset;
@@ -855,7 +860,7 @@ status_t VmObjectPaged::CacheOp(const uint64_t start_offset, const uint64_t len,
         op_start_offset += cache_op_len;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void VmObjectPaged::RangeChangeUpdateFromParentLocked(const uint64_t offset, const uint64_t len) {

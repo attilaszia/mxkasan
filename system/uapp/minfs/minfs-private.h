@@ -16,6 +16,7 @@
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
 
+#include <fs/block-txn.h>
 #include <fs/mapped-vmo.h>
 
 #ifdef __Fuchsia__
@@ -24,7 +25,6 @@
 
 #include <fs/vfs.h>
 
-#include "block-txn.h"
 #include "minfs.h"
 #include "misc.h"
 
@@ -35,6 +35,9 @@
     } while (0)
 
 namespace minfs {
+
+using WriteTxn = fs::WriteTxn<kMinfsBlockSize, Bcache>;
+using ReadTxn = fs::ReadTxn<kMinfsBlockSize, Bcache>;
 
 // minfs_sync_vnode flags
 constexpr uint32_t kMxFsSyncDefault = 0; // default: no implicit time update
@@ -70,6 +73,9 @@ public:
     // Allocate a new data block.
     mx_status_t BlockNew(WriteTxn* txn, uint32_t hint, uint32_t* out_bno);
 
+    // free block in block bitmap
+    mx_status_t BlockFree(WriteTxn* txn, uint32_t bno);
+
     // free ino in inode bitmap, release all blocks held by inode
     mx_status_t InoFree(
 #ifdef __Fuchsia__
@@ -86,17 +92,12 @@ public:
         return dispatcher_.get();
     }
 #endif
-
     void ValidateBno(uint32_t bno) const {
         MX_DEBUG_ASSERT(info_.dat_block <= bno);
         MX_DEBUG_ASSERT(bno < info_.block_count);
     }
 
     mxtl::unique_ptr<Bcache> bc_;
-    RawBitmap block_map_;
-#ifdef __Fuchsia__
-    vmoid_t block_map_vmoid_;
-#endif
     minfs_info_t info_;
 
 private:
@@ -106,17 +107,24 @@ private:
     // Find a free inode, allocate it in the inode bitmap, and write it back to disk
     mx_status_t InoNew(WriteTxn* txn, const minfs_inode_t* inode, uint32_t* ino_out);
 
+    // Enqueues an update for allocated inode/block counts
+    mx_status_t CountUpdate(WriteTxn* txn);
 #ifdef __Fuchsia__
     mxtl::unique_ptr<fs::Dispatcher> dispatcher_;
 #endif
     uint32_t abmblks_;
     uint32_t ibmblks_;
     RawBitmap inode_map_;
+    RawBitmap block_map_;
 #ifdef __Fuchsia__
     mxtl::unique_ptr<MappedVmo> inode_table_;
+    mxtl::unique_ptr<MappedVmo> info_vmo_;
     vmoid_t inode_map_vmoid_;
+    vmoid_t block_map_vmoid_;
     vmoid_t inode_table_vmoid_;
+    vmoid_t info_vmoid_;
 #endif
+
     // Vnodes exist in the hash table as long as one or more reference exists;
     // when the Vnode is deleted, it is immediately removed from the map.
     using HashTable = mxtl::HashTable<uint32_t, VnodeMinfs*>;
@@ -250,14 +258,21 @@ private:
     vmoid_t vmoid_;
     vmoid_t vmoid_indirect_;
 
-#endif
+    // Use the watcher container to implement a directory watcher
+    void NotifyAdd(const char* name, size_t len) final;
+    mx_status_t WatchDir(mx_handle_t* out) final;
+    mx_status_t WatchDirV2(const vfs_watch_dir_t* cmd) final;
+
     // The vnode is acting as a mount point for a remote filesystem or device.
     virtual bool IsRemote() const final;
     virtual mx_handle_t DetachRemote() final;
     virtual mx_handle_t WaitForRemote() final;
     virtual mx_handle_t GetRemote() const final;
     virtual void SetRemote(mx_handle_t remote) final;
+
     fs::RemoteContainer remoter_;
+    fs::WatcherContainer watcher_;
+#endif
 };
 
 // write the inode data of this vnode to disk (default does not update time values)
@@ -279,6 +294,7 @@ public:
     mx_status_t CheckForUnusedBlocks() const;
     mx_status_t CheckForUnusedInodes() const;
     mx_status_t CheckLinkCounts() const;
+    mx_status_t CheckAllocatedCounts() const;
 
     // "Set once"-style flag to identify if anything nonconforming
     // was found in the underlying filesystem -- even if it was fixed.
@@ -298,6 +314,8 @@ private:
     RawBitmap checked_inodes_;
     RawBitmap checked_blocks_;
 
+    uint32_t alloc_inodes_;
+    uint32_t alloc_blocks_;
     mxtl::Array<int32_t> links_;
 };
 

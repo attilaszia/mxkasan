@@ -50,6 +50,7 @@ typedef struct xhci_endpoint {
     xhci_transfer_state_t* transfer_state;  // transfer state for current_txn
     mtx_t lock;
     bool enabled;
+    bool halted;                // set if endpoint is in HALTED or ERROR state
 } xhci_endpoint_t;
 
 typedef struct xhci_slot {
@@ -78,9 +79,8 @@ struct xhci {
     // the device we implement
     mx_device_t* mxdev;
     mx_device_t* bus_mxdev;
-    usb_bus_protocol_t* bus_protocol;
+    usb_bus_protocol_t bus;
 
-    pci_protocol_t* pci_proto;
     bool legacy_irq_mode;
     mx_handle_t irq_handle;
     mx_handle_t mmio_handle;
@@ -171,6 +171,7 @@ struct xhci {
 mx_status_t xhci_init(xhci_t* xhci, void* mmio);
 mx_status_t xhci_endpoint_init(xhci_endpoint_t* ep, int ring_count);
 void xhci_endpoint_free(xhci_endpoint_t* ep);
+int xhci_get_ep_state(xhci_endpoint_t* ep);
 void xhci_start(xhci_t* xhci);
 void xhci_handle_interrupt(xhci_t* xhci, bool legacy);
 void xhci_post_command(xhci_t* xhci, uint32_t command, uint64_t ptr, uint32_t control_bits,

@@ -10,14 +10,11 @@
 
 #include <arch/x86/hypervisor.h>
 #include <arch/x86/hypervisor_state.h>
+#include <arch/x86/interrupts.h>
 #include <kernel/event.h>
 #include <kernel/timer.h>
 
-typedef struct mx_guest_gpr mx_guest_gpr_t;
-
-static const uint64_t kIoApicPhysBase = 0xfec00000;
-static const uint8_t kIoApicRedirectOffsets = 0x36;
-static const uint32_t kInvalidInterrupt = UINT32_MAX >> 1;
+static const uint16_t kNumInterrupts = X86_MAX_INT + 1;
 
 #define X86_MSR_IA32_FEATURE_CONTROL                0x003a      /* Feature control */
 #define X86_MSR_IA32_VMX_BASIC                      0x0480      /* Basic info */
@@ -145,6 +142,7 @@ enum class VmcsFieldXX : uint64_t {
 #define PROCBASED_CTLS2_EPT                 (1u << 1)
 #define PROCBASED_CTLS2_RDTSCP              (1u << 3)
 #define PROCBASED_CTLS2_VPID                (1u << 5)
+#define PROCBASED_CTLS2_INVPCID            (1u << 12)
 
 /* PROCBASED_CTLS flags */
 #define PROCBASED_CTLS_INT_WINDOW_EXITING   (1u << 2)
@@ -190,6 +188,8 @@ enum class VmcsFieldXX : uint64_t {
 #define GUEST_XX_ACCESS_RIGHTS_L            (1u << 13)
 // See Volume 3, Section 3.5 for valid system selectors types.
 #define GUEST_TR_ACCESS_RIGHTS_TSS_BUSY     (11u << 0)
+
+typedef struct mx_guest_gpr mx_guest_gpr_t;
 
 /* Stores VMX info from the IA32_VMX_BASIC MSR. */
 struct VmxInfo {
@@ -251,13 +251,13 @@ private:
 
 class AutoVmcsLoad {
 public:
-    AutoVmcsLoad(VmxPage* page);
+    AutoVmcsLoad(const VmxPage* page);
     ~AutoVmcsLoad();
 
-    void reload();
+    void reload(bool interruptible);
 
 private:
-    VmxPage* page_;
+    const VmxPage* page_;
 };
 
 /* Stores the local APIC state across VM exits. */
@@ -266,10 +266,10 @@ struct LocalApicState {
     timer_t timer;
     // Event for handling block on HLT.
     event_t event;
-    // Active interrupt, one of enum x86_interrupt_vector or kInvalidInterrupt.
-    uint32_t active_interrupt;
-    // TSC deadline.
-    uint64_t tsc_deadline;
+    // Lock for the interrupt bitmap.
+    SpinLock interrupt_lock;
+    // Bitmap of active interrupts.
+    bitmap::RawBitmapGeneric<bitmap::FixedStorage<kNumInterrupts>> interrupt_bitmap;
     // Virtual local APIC address.
     void* apic_addr;
     // Virtual local APIC memory.
@@ -281,10 +281,11 @@ class VmcsPerCpu : public PerCpu {
 public:
     status_t Init(const VmxInfo& vmx_info) override;
     status_t Clear();
-    status_t Setup(paddr_t pml4_address, paddr_t apic_access_address,
+    status_t Setup(uint16_t vpid, paddr_t pml4_address, paddr_t apic_access_address,
                    paddr_t msr_bitmaps_address);
     status_t Enter(const VmcsContext& context, GuestPhysicalAddressSpace* gpas,
                    FifoDispatcher* ctl_fifo);
+    status_t Interrupt(uint8_t interrupt);
     status_t SetGpr(const mx_guest_gpr_t& guest_gpr);
     status_t GetGpr(mx_guest_gpr_t* guest_gpr) const;
     status_t SetApicMem(mxtl::RefPtr<VmObject> apic_mem);

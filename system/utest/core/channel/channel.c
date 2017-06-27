@@ -766,6 +766,65 @@ static bool channel_call2(void) {
     END_TEST;
 }
 
+// SYSCALL_mx_channel_call_finish is an internal system call used in the
+// vDSO's implementation of mx_channel_call.  It's not part of the ABI and
+// so it's not exported from the vDSO.  It's hard to test the kernel's
+// invariants without calling this directly.  So use some chicanery to
+// find its address in the vDSO despite it not being public.
+//
+// The vdso-code.h header file is generated from the vDSO binary.  It gives
+// the offsets of the internal functions.  So take a public vDSO function,
+// subtract its offset to discover the vDSO base (could do this other ways,
+// but this is the simplest), and then add the offset of the internal
+// SYSCALL_mx_channel_call_finish function we want to call.
+#include "vdso-code.h"
+static mx_status_t mx_channel_call_finish(mx_handle_t handle,
+                                          mx_time_t deadline,
+                                          const mx_channel_call_args_t* args,
+                                          uint32_t* actual_bytes,
+                                          uint32_t* actual_handles,
+                                          mx_status_t* read_status) {
+    uintptr_t vdso_base =
+        (uintptr_t)&mx_handle_close - VDSO_SYSCALL_mx_handle_close;
+    uintptr_t fnptr = vdso_base + VDSO_SYSCALL_mx_channel_call_finish;
+    return (*(__typeof(mx_channel_call_finish)*)fnptr)(
+        handle, deadline, args, actual_bytes, actual_handles, read_status);
+}
+
+static bool bad_channel_call_finish(void) {
+    BEGIN_TEST;
+
+    mx_handle_t cli, srv;
+    ASSERT_EQ(mx_channel_create(0, &cli, &srv), MX_OK, "");
+
+    char msg[8] = { 0, };
+    mx_channel_call_args_t args = {
+        .wr_bytes = msg,
+        .wr_handles = NULL,
+        .wr_num_bytes = sizeof(msg),
+        .wr_num_handles = 0,
+        .rd_bytes = NULL,
+        .rd_handles = NULL,
+        .rd_num_bytes = 0,
+        .rd_num_handles = 0,
+    };
+
+    uint32_t act_bytes = 0xffffffff;
+    uint32_t act_handles = 0xffffffff;
+
+    // Call channel_call_finish without having had a channel call interrupted
+    mx_status_t rs = MX_OK;
+    mx_status_t r = mx_channel_call_finish(cli, mx_deadline_after(MX_MSEC(1000)), &args, &act_bytes,
+                                           &act_handles, &rs);
+
+    mx_handle_close(cli);
+
+    EXPECT_EQ(r, MX_ERR_CALL_FAILED, "");
+    EXPECT_EQ(rs, MX_ERR_BAD_STATE, "");
+
+    END_TEST;
+}
+
 static bool channel_nest(void) {
     BEGIN_TEST;
     mx_handle_t channel[2];
@@ -785,6 +844,23 @@ static bool channel_nest(void) {
     END_TEST;
 }
 
+// Test the case of writing a channel handle to itself.  The kernel
+// currently disallows this, because otherwise it would create a reference
+// cycle and potentially allow channels to be leaked.
+static bool channel_disallow_write_to_self(void) {
+    BEGIN_TEST;
+
+    mx_handle_t channel[2];
+    ASSERT_EQ(mx_channel_create(0, &channel[0], &channel[1]), MX_OK, "");
+    EXPECT_EQ(mx_channel_write(channel[0], 0, NULL, 0, &channel[0], 1),
+              MX_ERR_NOT_SUPPORTED, "");
+    // Clean up.
+    EXPECT_EQ(mx_handle_close(channel[0]), MX_OK, "");
+    EXPECT_EQ(mx_handle_close(channel[1]), MX_OK, "");
+
+    END_TEST;
+}
+
 BEGIN_TEST_CASE(channel_tests)
 RUN_TEST(channel_test)
 RUN_TEST(channel_read_error_test)
@@ -795,7 +871,9 @@ RUN_TEST(channel_multithread_read)
 RUN_TEST(channel_may_discard)
 RUN_TEST(channel_call)
 RUN_TEST(channel_call2)
+RUN_TEST(bad_channel_call_finish)
 RUN_TEST(channel_nest)
+RUN_TEST(channel_disallow_write_to_self)
 END_TEST_CASE(channel_tests)
 
 #ifndef BUILD_COMBINED_TESTS

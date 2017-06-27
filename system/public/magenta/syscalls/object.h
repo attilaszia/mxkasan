@@ -20,16 +20,17 @@ typedef enum {
     MX_INFO_PROCESS_THREADS            = 4,  // mx_koid_t[n]
     MX_INFO_RESOURCE_CHILDREN          = 5,  // mx_rrec_t[n]
     MX_INFO_RESOURCE_RECORDS           = 6,  // mx_rrec_t[n]
-    MX_INFO_VMAR                       = 7,  // mx_info_vmar_t
+    MX_INFO_VMAR                       = 7,  // mx_info_vmar_t[1]
     MX_INFO_JOB_CHILDREN               = 8,  // mx_koid_t[n]
     MX_INFO_JOB_PROCESSES              = 9,  // mx_koid_t[n]
     MX_INFO_THREAD                     = 10, // mx_info_thread_t[1]
     MX_INFO_THREAD_EXCEPTION_REPORT    = 11, // mx_exception_report_t[1]
     MX_INFO_TASK_STATS                 = 12, // mx_info_task_stats_t[1]
     MX_INFO_PROCESS_MAPS               = 13, // mx_info_maps_t[n]
-    MX_INFO_THREAD_STATS               = 14, // mx_info_thread_stats_t[1]
-    MX_INFO_CPU_STATS                  = 15, // mx_info_cpu_stats_t[n]
-    MX_INFO_KMEM_STATS                 = 16, // mx_info_kmem_stats_t[1]
+    MX_INFO_PROCESS_VMOS               = 14, // mx_info_vmo_t[n]
+    MX_INFO_THREAD_STATS               = 15, // mx_info_thread_stats_t[1]
+    MX_INFO_CPU_STATS                  = 16, // mx_info_cpu_stats_t[n]
+    MX_INFO_KMEM_STATS                 = 17, // mx_info_kmem_stats_t[1]
     MX_INFO_LAST
 } mx_object_info_topic_t;
 
@@ -37,7 +38,7 @@ typedef enum {
     MX_OBJ_TYPE_NONE                = 0,
     MX_OBJ_TYPE_PROCESS             = 1,
     MX_OBJ_TYPE_THREAD              = 2,
-    MX_OBJ_TYPE_VMEM                = 3,
+    MX_OBJ_TYPE_VMO                 = 3,
     MX_OBJ_TYPE_CHANNEL             = 4,
     MX_OBJ_TYPE_EVENT               = 5,
     MX_OBJ_TYPE_IOPORT              = 6,
@@ -200,6 +201,79 @@ typedef struct mx_info_maps {
     } u;
 } mx_info_maps_t;
 
+
+// Values and types used by MX_INFO_PROCESS_VMOS.
+
+// The VMO is backed by RAM, consuming memory.
+// Mutually exclusive with MX_INFO_VMO_TYPE_PHYSICAL.
+// See MX_INFO_VMO_TYPE(flags)
+#define MX_INFO_VMO_TYPE_PAGED              (1u<<0)
+
+// The VMO points to a physical address range, and does not consume memory.
+// Typically used to access memory-mapped hardware.
+// Mutually exclusive with MX_INFO_VMO_TYPE_PAGED.
+// See MX_INFO_VMO_TYPE(flags)
+#define MX_INFO_VMO_TYPE_PHYSICAL           (0u<<0)
+
+// Returns a VMO's type based on its flags, allowing for checks like
+// if (MX_INFO_VMO_TYPE(f) == MX_INFO_VMO_TYPE_PAGED)
+#define MX_INFO_VMO_TYPE(flags)             ((flags) & (1u<<0))
+
+// The VMO is a clone, and is a copy-on-write clone.
+#define MX_INFO_VMO_IS_COW_CLONE            (1u<<2)
+
+// When reading a list of VMOs pointed to by a process, indicates that the
+// process has a handle to the VMO, which isn't necessarily mapped.
+#define MX_INFO_VMO_VIA_HANDLE              (1u<<3)
+
+// When reading a list of VMOs pointed to by a process, indicates that the
+// process maps the VMO into a VMAR, but doesn't necessarily have a handle to
+// the VMO.
+#define MX_INFO_VMO_VIA_MAPPING             (1u<<4)
+
+// Describes a VMO. For mapping information, see |mx_info_maps_t|.
+typedef struct mx_info_vmo {
+    // The koid of this VMO.
+    mx_koid_t koid;
+
+    // The name of this VMO.
+    char name[MX_MAX_NAME_LEN];
+
+    // The size of this VMO; i.e., the amount of virtual address space it
+    // would consume if mapped.
+    uint64_t size_bytes;
+
+    // If this VMO is a clone, the koid of its parent. Otherwise, zero.
+    // See |flags| for the type of clone.
+    mx_koid_t parent_koid;
+
+    // The number of clones of this VMO, if any.
+    size_t num_children;
+
+    // The number of times this VMO is currently mapped into VMARs.
+    // Note that the same process will often map the same VMO twice,
+    // and both mappings will be counted here. (I.e., this is not a count
+    // of the number of processes that map this VMO; see share_count.)
+    size_t num_mappings;
+
+    // An estimate of the number of unique address spaces that
+    // this VMO is mapped into. Every process has its own address space,
+    // and so does the kernel.
+    size_t share_count;
+
+    // Bitwise OR of MX_INFO_VMO_* values.
+    uint32_t flags;
+
+    // If |MX_INFO_VMO_TYPE(flags) == MX_INFO_VMO_TYPE_PAGED|, the amount of
+    // memory currently allocated to this VMO; i.e., the amount of physical
+    // memory it consumes. Undefined otherwise.
+    uint64_t committed_bytes;
+
+    // If |flags & MX_INFO_VMO_VIA_HANDLE|, the handle rights.
+    // Undefined otherwise.
+    mx_rights_t handle_rights;
+} mx_info_vmo_t;
+
 // kernel statistics per cpu
 typedef struct mx_info_cpu_stats {
     uint32_t cpu_number;
@@ -283,17 +357,6 @@ typedef struct mx_info_kmem_stats {
 
 // Argument is the base address of the vDSO mapping (or zero), a uintptr_t.
 #define MX_PROP_PROCESS_VDSO_BASE_ADDRESS   6u
-
-// Argument is the number of descendant generations that a job is allowed to
-// have, as a uint32_t.
-//
-// A job has a MAX_HEIGHT value equal to one less than its parent's MAX_HEIGHT
-// value.
-//
-// A job with MAX_HEIGHT equal to zero may not have any child jobs, and calling
-// mx_job_create() on such a job will fail with ERR_OUT_OF_RANGE. MAX_HEIGHT
-// does not affect the creation of processes.
-#define MX_PROP_JOB_MAX_HEIGHT              7u
 
 // Values for mx_info_thread_t.state.
 #define MX_THREAD_STATE_NEW                 0u

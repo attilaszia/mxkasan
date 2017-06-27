@@ -12,8 +12,11 @@
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/object.h>
 #include <magenta/syscalls/port.h>
+#include <mxtl/limits.h>
 #include <unittest/unittest.h>
 #include <sys/mman.h>
+
+#define ROUNDUP(a, b) (((a) + ((b)-1)) & ~((b)-1))
 
 // These tests focus on the semantics of the VMARs themselves.  For heavier
 // testing of the mapping permissions, see the VMO tests.
@@ -687,16 +690,28 @@ bool invalid_args_test() {
                                MX_VM_FLAG_CAN_MAP_SPECIFIC,
                                &region, &region_addr),
               MX_ERR_INVALID_ARGS, "");
-    EXPECT_EQ(mx_vmar_map(vmar, PAGE_SIZE - 1, vmo, 0,
-                          4 * PAGE_SIZE,
-                          MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC,
-                          &map_addr),
-              MX_ERR_INVALID_ARGS, "");
-    EXPECT_EQ(mx_vmar_map(vmar, PAGE_SIZE, vmo, PAGE_SIZE - 1,
-                          3 * PAGE_SIZE,
-                          MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC,
-                          &map_addr),
-              MX_ERR_INVALID_ARGS, "");
+    // Try the invalid maps with and without MX_VM_FLAG_MAP_RANGE.
+    for (size_t i = 0; i < 2; ++i) {
+        const uint32_t map_range = i ? MX_VM_FLAG_MAP_RANGE : 0;
+        // Specific, misaligned vmar offset
+        EXPECT_EQ(mx_vmar_map(vmar, PAGE_SIZE - 1, vmo, 0,
+                              4 * PAGE_SIZE,
+                              MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC | map_range,
+                              &map_addr),
+                  MX_ERR_INVALID_ARGS, "");
+        // Specific, misaligned vmo offset
+        EXPECT_EQ(mx_vmar_map(vmar, PAGE_SIZE, vmo, PAGE_SIZE - 1,
+                              3 * PAGE_SIZE,
+                              MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC | map_range,
+                              &map_addr),
+                  MX_ERR_INVALID_ARGS, "");
+        // Non-specific, misaligned vmo offset
+        EXPECT_EQ(mx_vmar_map(vmar, 0, vmo, PAGE_SIZE - 1,
+                              3 * PAGE_SIZE,
+                              MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | map_range,
+                              &map_addr),
+                  MX_ERR_INVALID_ARGS, "");
+    }
     EXPECT_EQ(mx_vmar_map(vmar, 0, vmo, 0,
                           4 * PAGE_SIZE, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
                           &map_addr),
@@ -734,6 +749,32 @@ bool invalid_args_test() {
     EXPECT_EQ(mx_vmar_unmap(vmar, map_addr, 0), MX_ERR_INVALID_ARGS, "");
     EXPECT_EQ(mx_vmar_protect(vmar, map_addr, 0, MX_VM_FLAG_PERM_READ),
               MX_ERR_INVALID_ARGS, "");
+    EXPECT_EQ(mx_vmar_unmap(vmar, map_addr, 4 * PAGE_SIZE), MX_OK, "");
+
+    // size rounds up to 0
+    constexpr size_t bad_size = mxtl::numeric_limits<size_t>::max() - PAGE_SIZE + 2;
+    static_assert(((bad_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)) == 0, "");
+    EXPECT_EQ(mx_vmar_allocate(vmar, 0, bad_size,
+                               MX_VM_FLAG_CAN_MAP_READ | MX_VM_FLAG_CAN_MAP_WRITE,
+                               &region, &region_addr),
+              MX_ERR_INVALID_ARGS, "");
+    EXPECT_EQ(mx_vmar_map(vmar, 0, vmo, 0, bad_size, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
+                          &map_addr),
+              MX_ERR_INVALID_ARGS, "");
+    EXPECT_EQ(mx_vmar_map(vmar, 0, vmo, 0, bad_size, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_MAP_RANGE,
+                          &map_addr),
+              MX_ERR_INVALID_ARGS, "");
+    // Attempt bad protect/unmaps
+    EXPECT_EQ(mx_vmar_map(vmar, PAGE_SIZE, vmo, 0,
+                          4 * PAGE_SIZE,
+                          MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC,
+                          &map_addr),
+              MX_OK, "");
+    for (ssize_t i = -1; i < 2; ++i) {
+        EXPECT_EQ(mx_vmar_protect(vmar, map_addr + PAGE_SIZE * i, bad_size, MX_VM_FLAG_PERM_READ),
+                  MX_ERR_INVALID_ARGS, "");
+        EXPECT_EQ(mx_vmar_unmap(vmar, map_addr + PAGE_SIZE * i, bad_size), MX_ERR_INVALID_ARGS, "");
+    }
     EXPECT_EQ(mx_vmar_unmap(vmar, map_addr, 4 * PAGE_SIZE), MX_OK, "");
 
     // Flags with invalid bits set
@@ -798,6 +839,50 @@ bool unaligned_len_test() {
         size_t read;
         EXPECT_EQ(mx_process_read_memory(process, map_addr + 3 * PAGE_SIZE, &buf, 1, &read),
                   MX_ERR_NO_MEMORY, "");
+    }
+
+    EXPECT_EQ(mx_handle_close(vmo), MX_OK, "");
+    EXPECT_EQ(mx_handle_close(vmar), MX_OK, "");
+    EXPECT_EQ(mx_handle_close(process), MX_OK, "");
+
+    END_TEST;
+}
+
+// Test passing in unaligned lens to map
+bool unaligned_len_map_test() {
+    BEGIN_TEST;
+
+    mx_handle_t process;
+    mx_handle_t vmar;
+    mx_handle_t vmo;
+    uintptr_t map_addr;
+
+    ASSERT_EQ(mx_process_create(mx_job_default(), kProcessName, sizeof(kProcessName) - 1,
+                                0, &process, &vmar), MX_OK, "");
+    ASSERT_EQ(mx_vmo_create(4 * PAGE_SIZE, 0, &vmo), MX_OK, "");
+
+    for (size_t i = 0; i < 2; ++i) {
+        const uint32_t map_range = i ? MX_VM_FLAG_MAP_RANGE : 0;
+        ASSERT_EQ(mx_vmar_map(vmar, 0, vmo, 0, 4 * PAGE_SIZE - 1, MX_VM_FLAG_PERM_READ | map_range,
+                              &map_addr),
+                 MX_OK, "");
+
+        // Make sure we can access the last page of the memory mapping
+        {
+            uint8_t buf;
+            size_t read;
+            EXPECT_EQ(mx_process_read_memory(process, map_addr + 3 * PAGE_SIZE, &buf, 1, &read),
+                      MX_OK, "");
+        }
+
+        EXPECT_EQ(mx_vmar_unmap(vmar, map_addr, 4 * PAGE_SIZE - 1), MX_OK, "");
+        // Make sure we can't access the last page of the memory mappings anymore
+        {
+            uint8_t buf;
+            size_t read;
+            EXPECT_EQ(mx_process_read_memory(process, map_addr + 3 * PAGE_SIZE, &buf, 1, &read),
+                      MX_ERR_NO_MEMORY, "");
+        }
     }
 
     EXPECT_EQ(mx_handle_close(vmo), MX_OK, "");
@@ -1636,6 +1721,100 @@ bool protect_over_demand_paged_test() {
     END_TEST;
 }
 
+// Verify that we can change protections on unmapped pages successfully.
+bool protect_large_uncommitted_test() {
+    BEGIN_TEST;
+
+    mx_handle_t vmo;
+    // Create a 1GB VMO
+    const size_t size = 1ull << 30;
+    ASSERT_EQ(mx_vmo_create(size, 0, &vmo), MX_OK, "");
+
+    // TODO(teisenbe): Move this into a separate process; currently we don't
+    // have an easy way to run a small test routine in another process.
+    uintptr_t mapping_addr;
+    ASSERT_EQ(mx_vmar_map(mx_vmar_root_self(), 0, vmo, 0, size,
+                          MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
+                          &mapping_addr),
+              MX_OK, "");
+    EXPECT_EQ(mx_handle_close(vmo), MX_OK, "");
+
+    // Make sure some pages exist
+    volatile uint8_t* target = reinterpret_cast<volatile uint8_t*>(mapping_addr);
+    target[0] = 5;
+    target[size / 2] = 6;
+    target[size - 1] = 7;
+
+    // Ensure we're misaligned relative to a larger paging structure level.
+    // TODO(teisenbe): Would be nice for this to be more arch aware.
+    const uintptr_t base = ROUNDUP(mapping_addr, 512 * PAGE_SIZE) + PAGE_SIZE;
+    const size_t protect_size = mapping_addr + size - base;
+    ASSERT_EQ(mx_vmar_protect(mx_vmar_root_self(), base, protect_size,
+                              MX_VM_FLAG_PERM_READ),
+              MX_OK, "");
+
+    // Attempt to write to the mapping again
+    bool success;
+    EXPECT_EQ(test_local_address(mapping_addr, true, &success), MX_OK, "");
+    EXPECT_TRUE(success, "mapping should still be writeable");
+    EXPECT_EQ(test_local_address(mapping_addr + size / 4, true, &success), MX_OK, "");
+    EXPECT_FALSE(success, "mapping should no longer be writeable");
+    EXPECT_EQ(test_local_address(mapping_addr + size / 2, true, &success), MX_OK, "");
+    EXPECT_FALSE(success, "mapping should no longer be writeable");
+    EXPECT_EQ(test_local_address(mapping_addr + size - 1, true, &success), MX_OK, "");
+    EXPECT_FALSE(success, "mapping should no longer be writeable");
+
+    EXPECT_EQ(mx_vmar_unmap(mx_vmar_root_self(), mapping_addr, size), MX_OK, "");
+
+    END_TEST;
+}
+
+// Attempt to unmap a large mostly uncommitted VMO
+bool unmap_large_uncommitted_test() {
+    BEGIN_TEST;
+
+    mx_handle_t vmo;
+    // Create a 1GB VMO
+    const size_t size = 1ull << 30;
+    ASSERT_EQ(mx_vmo_create(size, 0, &vmo), MX_OK, "");
+
+    // TODO(teisenbe): Move this into a separate process; currently we don't
+    // have an easy way to run a small test routine in another process.
+    uintptr_t mapping_addr;
+    ASSERT_EQ(mx_vmar_map(mx_vmar_root_self(), 0, vmo, 0, size,
+                          MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
+                          &mapping_addr),
+              MX_OK, "");
+    EXPECT_EQ(mx_handle_close(vmo), MX_OK, "");
+
+    // Make sure some pages exist
+    volatile uint8_t* target = reinterpret_cast<volatile uint8_t*>(mapping_addr);
+    target[0] = 5;
+    target[size / 2] = 6;
+    target[size - 1] = 7;
+
+    // Ensure we're misaligned relative to a larger paging structure level.
+    // TODO(teisenbe): Would be nice for this to be more arch aware.
+    const uintptr_t base = ROUNDUP(mapping_addr, 512 * PAGE_SIZE) + PAGE_SIZE;
+    const size_t unmap_size = mapping_addr + size - base;
+    ASSERT_EQ(mx_vmar_unmap(mx_vmar_root_self(), base, unmap_size), MX_OK, "");
+
+    // Attempt to write to the mapping again
+    bool success;
+    EXPECT_EQ(test_local_address(mapping_addr, true, &success), MX_OK, "");
+    EXPECT_TRUE(success, "mapping should still be writeable");
+    EXPECT_EQ(test_local_address(mapping_addr + size / 4, true, &success), MX_OK, "");
+    EXPECT_FALSE(success, "mapping should no longer be writeable");
+    EXPECT_EQ(test_local_address(mapping_addr + size / 2, true, &success), MX_OK, "");
+    EXPECT_FALSE(success, "mapping should no longer be writeable");
+    EXPECT_EQ(test_local_address(mapping_addr + size - 1, true, &success), MX_OK, "");
+    EXPECT_FALSE(success, "mapping should no longer be writeable");
+
+    EXPECT_EQ(mx_vmar_unmap(mx_vmar_root_self(), mapping_addr, size), MX_OK, "");
+
+    END_TEST;
+}
+
 }
 
 BEGIN_TEST_CASE(vmar_tests)
@@ -1649,6 +1828,7 @@ RUN_TEST(map_in_compact_test);
 RUN_TEST(overmapping_test);
 RUN_TEST(invalid_args_test);
 RUN_TEST(unaligned_len_test);
+RUN_TEST(unaligned_len_map_test);
 RUN_TEST(rights_drop_test);
 RUN_TEST(protect_test);
 RUN_TEST(nested_region_perms_test);
@@ -1660,6 +1840,8 @@ RUN_TEST(map_specific_overwrite_test);
 RUN_TEST(protect_split_test);
 RUN_TEST(protect_multiple_test);
 RUN_TEST(protect_over_demand_paged_test);
+RUN_TEST(protect_large_uncommitted_test);
+RUN_TEST(unmap_large_uncommitted_test);
 END_TEST_CASE(vmar_tests)
 
 #ifndef BUILD_COMBINED_TESTS

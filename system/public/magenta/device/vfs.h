@@ -4,9 +4,11 @@
 
 #pragma once
 
-#include <magenta/device/ioctl.h>
 #include <magenta/device/ioctl-wrapper.h>
+#include <magenta/device/ioctl.h>
 #include <magenta/types.h>
+
+#define MAX_FS_NAME_LEN 32
 
 #define IOCTL_VFS_MOUNT_FS \
     IOCTL(IOCTL_KIND_SET_HANDLE, IOCTL_FAMILY_VFS, 0)
@@ -34,7 +36,6 @@
 #define IOCTL_VFS_WATCH_DIR \
     IOCTL(IOCTL_KIND_GET_HANDLE, IOCTL_FAMILY_VFS, 7)
 
-
 // Watch a directory for changes
 // in: vfs_watch_dir_t
 //
@@ -48,30 +49,30 @@
     IOCTL(IOCTL_KIND_SET_HANDLE, IOCTL_FAMILY_VFS, 8)
 
 typedef struct {
-    mx_handle_t channel;  // Channel to which watch events will be sent
-    uint32_t mask;        // Bitmask of desired events (1 << WATCH_EVT_*)
-    uint32_t options;     // Options.  Must be zero.
+    mx_handle_t channel; // Channel to which watch events will be sent
+    uint32_t mask;       // Bitmask of desired events (1 << WATCH_EVT_*)
+    uint32_t options;    // Options.  Must be zero.
 } vfs_watch_dir_t;
 
 // Indicates that the directory being watched has been deleted.
 // namelen will be 0
-#define VFS_WATCH_EVT_DELETED     0
+#define VFS_WATCH_EVT_DELETED 0
 
 // Indication of a file that has been added (created or moved
 // in) to the directory
-#define VFS_WATCH_EVT_ADDED       1
+#define VFS_WATCH_EVT_ADDED 1
 
 // Indication of a file that has been removed (deleted or moved
 // out) from the directory
-#define VFS_WATCH_EVT_REMOVED     2
+#define VFS_WATCH_EVT_REMOVED 2
 
 // Indication of file already in directory when watch started
-#define VFS_WATCH_EVT_EXISTING    3
+#define VFS_WATCH_EVT_EXISTING 3
 
 // Indication that no more EXISTING events will be sent (client
 // has been informed of all pre-existing files in this directory)
 // namelen will be 0
-#define VFS_WATCH_EVT_IDLE        4
+#define VFS_WATCH_EVT_IDLE 4
 
 typedef struct {
     uint8_t event;
@@ -79,12 +80,16 @@ typedef struct {
     char name[];
 } vfs_watch_msg_t;
 
+// clang-format off
+
 #define VFS_WATCH_MASK_DELETED  (1u << VFS_WATCH_EVT_DELETED)
 #define VFS_WATCH_MASK_ADDED    (1u << VFS_WATCH_EVT_ADDED)
 #define VFS_WATCH_MASK_REMOVED  (1u << VFS_WATCH_EVT_REMOVED)
 #define VFS_WATCH_MASK_EXISTING (1u << VFS_WATCH_EVT_EXISTING)
 #define VFS_WATCH_MASK_IDLE     (1u << VFS_WATCH_EVT_IDLE)
 #define VFS_WATCH_MASK_ALL      (0x1Fu)
+
+// clang-format on
 
 #define VFS_WATCH_NAME_MAX 255
 #define VFS_WATCH_MSG_MAX 8192
@@ -101,8 +106,17 @@ IOCTL_WRAPPER_OUT(ioctl_vfs_unmount_node, IOCTL_VFS_UNMOUNT_NODE, mx_handle_t);
 // ssize_t ioctl_vfs_mount_bootfs_vmo(int fd, mx_handle_t* in);
 IOCTL_WRAPPER_IN(ioctl_vfs_mount_bootfs_vmo, IOCTL_VFS_MOUNT_BOOTFS_VMO, mx_handle_t);
 
-// ssize_t ioctl_vfs_query_fs(int fd, char* out, size_t out_len);
-IOCTL_WRAPPER_VAROUT(ioctl_vfs_query_fs, IOCTL_VFS_QUERY_FS, char);
+typedef struct vfs_query_info {
+    // these are the total/used # of data bytes, not # of entire disk bytes
+    uint64_t total_bytes;
+    uint64_t used_bytes;
+    uint64_t total_nodes;
+    uint64_t used_nodes;
+    char name[MAX_FS_NAME_LEN];
+} vfs_query_info_t;
+
+// ssize_t ioctl_vfs_query_fs(int fd, vfs_query_info_t* out, size_t out_len);
+IOCTL_WRAPPER_VAROUT(ioctl_vfs_query_fs, IOCTL_VFS_QUERY_FS, vfs_query_info_t);
 
 // ssize_t ioctl_vfs_get_token(int fd, mx_handle_t* out);
 IOCTL_WRAPPER_OUT(ioctl_vfs_get_token, IOCTL_VFS_GET_TOKEN, mx_handle_t);

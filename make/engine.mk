@@ -228,11 +228,7 @@ ARCH_CPPFLAGS :=
 ARCH_ASMFLAGS :=
 
 # top level rule
-all:: $(OUTLKBIN) $(OUTLKELF)-gdb.py
-
-ifeq ($(ENABLE_BUILD_LISTFILES),true)
-all:: $(OUTLKELF).lst $(OUTLKELF).debug.lst  $(OUTLKELF).sym $(OUTLKELF).sym.sorted $(OUTLKELF).size
-endif
+all::
 
 # master module object list
 ALLOBJS_MODULE :=
@@ -476,6 +472,17 @@ all:: $(ALLHOST_APPS) $(ALLHOST_LIBS)
 
 tools:: $(ALLHOST_APPS) $(ALLHOST_LIBS)
 
+# meta rule for the kernel
+.PHONY: kern
+ifeq ($(ENABLE_BUILD_LISTFILES),true)
+kern: $(OUTLKBIN) $(OUTLKELF).lst $(OUTLKELF).debug.lst  $(OUTLKELF).sym $(OUTLKELF).sym.sorted $(OUTLKELF).size
+else
+kern: $(OUTLKBIN)
+endif
+
+# add the kernel to the build
+all:: kern
+
 # add some automatic configuration defines
 KERNEL_DEFINES += \
 	PROJECT_$(PROJECT)=1 \
@@ -686,7 +693,7 @@ install: all
 
 # generate a config-global.h file with all of the GLOBAL_DEFINES laid out in #define format
 $(GLOBAL_CONFIG_HEADER): FORCE
-	@$(call MAKECONFIGHEADER,$@,GLOBAL_DEFINES,"")
+	@$(call MAKECONFIGHEADER,$@,GLOBAL_DEFINES,"#define __Fuchsia__ 1")
 
 # generate a config-kernel.h file with all of the KERNEL_DEFINES laid out in #define format
 $(KERNEL_CONFIG_HEADER): FORCE
@@ -694,7 +701,7 @@ $(KERNEL_CONFIG_HEADER): FORCE
 
 # generate a config-user.h file with all of the USER_DEFINES laid out in #define format
 $(USER_CONFIG_HEADER): FORCE
-	@$(call MAKECONFIGHEADER,$@,USER_DEFINES,"#define __Fuchsia__ 1")
+	@$(call MAKECONFIGHEADER,$@,USER_DEFINES,"")
 
 $(HOST_CONFIG_HEADER): FORCE
 	@$(call MAKECONFIGHEADER,$@,HOST_DEFINES,"")

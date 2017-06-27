@@ -34,10 +34,13 @@ class VmObject : public mxtl::RefCounted<VmObject>,
                  public mxtl::DoublyLinkedListable<VmObject*> {
 public:
     // public API
-    virtual status_t Resize(uint64_t size) { return ERR_NOT_SUPPORTED; }
-    virtual status_t ResizeLocked(uint64_t size) TA_REQ(lock_) { return ERR_NOT_SUPPORTED; }
+    virtual status_t Resize(uint64_t size) { return MX_ERR_NOT_SUPPORTED; }
+    virtual status_t ResizeLocked(uint64_t size) TA_REQ(lock_) { return MX_ERR_NOT_SUPPORTED; }
 
     virtual uint64_t size() const { return 0; }
+
+    // Returns true if the object is backed by RAM.
+    virtual bool is_paged() const { return false; }
 
     // Returns the number of physical pages currently allocated to the
     // object where (offset <= page_offset < offset+len).
@@ -52,47 +55,47 @@ public:
 
     // find physical pages to back the range of the object
     virtual status_t CommitRange(uint64_t offset, uint64_t len, uint64_t* committed) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // find a contiguous run of physical pages to back the range of the object
     virtual status_t CommitRangeContiguous(uint64_t offset, uint64_t len, uint64_t* committed,
                                            uint8_t alignment_log2) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // free a range of the vmo back to the default state
     virtual status_t DecommitRange(uint64_t offset, uint64_t len, uint64_t* decommitted) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // read/write operators against kernel pointers only
     virtual status_t Read(void* ptr, uint64_t offset, size_t len, size_t* bytes_read) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
     virtual status_t Write(const void* ptr, uint64_t offset, size_t len, size_t* bytes_written) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // execute lookup_fn on a given range of physical addresses within the vmo
     virtual status_t Lookup(uint64_t offset, uint64_t len, uint pf_flags,
                             vmo_lookup_fn_t lookup_fn, void* context) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // read/write operators against user space pointers only
     virtual status_t ReadUser(user_ptr<void> ptr, uint64_t offset, size_t len, size_t* bytes_read) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
     virtual status_t WriteUser(user_ptr<const void> ptr, uint64_t offset, size_t len,
                                size_t* bytes_written) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // translate a range of the vmo to physical addresses and store in the buffer
     virtual status_t LookupUser(uint64_t offset, uint64_t len, user_ptr<paddr_t> buffer,
                                 size_t buffer_size) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // Returns a null-terminated name, or the empty string if set_name() has not
@@ -118,31 +121,31 @@ public:
 
     // cache maintainence operations.
     virtual status_t InvalidateCache(const uint64_t offset, const uint64_t len) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
     virtual status_t CleanCache(const uint64_t offset, const uint64_t len) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
     virtual status_t CleanInvalidateCache(const uint64_t offset, const uint64_t len) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
     virtual status_t SyncCache(const uint64_t offset, const uint64_t len) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     virtual status_t GetMappingCachePolicy(uint32_t* cache_policy) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     virtual status_t SetMappingCachePolicy(const uint32_t cache_policy) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // create a copy-on-write clone vmo at the page-aligned offset and length
     // note: it's okay to start or extend past the size of the parent
     virtual status_t CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
                               mxtl::RefPtr<VmObject>* clone_vmo) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     // Returns true if this VMO was created via CloneCOW().
@@ -154,7 +157,7 @@ public:
     // valid flags are VMM_PF_FLAG_*
     virtual status_t GetPageLocked(uint64_t offset, uint pf_flags,
                                    vm_page_t** page, paddr_t* pa) TA_REQ(lock_) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     Mutex* lock() TA_RET_CAP(lock_) { return &lock_; }
@@ -164,6 +167,10 @@ public:
     void RemoveMappingLocked(VmMapping* r) TA_REQ(lock_);
     uint32_t num_mappings() const;
 
+    // Returns true if this VMO is mapped into any VmAspace whose is_user()
+    // returns true.
+    bool IsMappedByUser() const;
+
     // Returns an estimate of the number of unique VmAspaces that this object
     // is mapped into.
     uint32_t share_count() const;
@@ -171,6 +178,21 @@ public:
     void AddChildLocked(VmObject* r) TA_REQ(lock_);
     void RemoveChildLocked(VmObject* r) TA_REQ(lock_);
     uint32_t num_children() const;
+
+    // Calls the provided |func(const VmObject&)| on every VMO in the system,
+    // from oldest to newest. Stops if |func| returns an error, returning the
+    // error value.
+    template <typename T>
+    static status_t ForEach(T func) {
+        AutoLock a(&all_vmos_lock_);
+        for (const auto& iter : all_vmos_) {
+            status_t s = func(iter);
+            if (s != MX_OK) {
+                return s;
+            }
+        }
+        return MX_OK;
+    }
 
 protected:
     // private constructor (use Create())
@@ -223,4 +245,19 @@ protected:
     // The user-friendly VMO name. For debug purposes only. That
     // is, there is no mechanism to get access to a VMO via this name.
     mxtl::Name<MX_MAX_NAME_LEN> name_;
+
+private:
+    // Per-node state for the global VMO list.
+    using NodeState = mxtl::DoublyLinkedListNodeState<VmObject*>;
+    NodeState global_list_state_;
+
+    // The global VMO list.
+    struct GlobalListTraits {
+        static NodeState& node_state(VmObject& vmo) {
+            return vmo.global_list_state_;
+        }
+    };
+    using GlobalList = mxtl::DoublyLinkedList<VmObject*, GlobalListTraits>;
+    static Mutex all_vmos_lock_;
+    static GlobalList all_vmos_ TA_GUARDED(all_vmos_lock_);
 };

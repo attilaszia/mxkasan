@@ -17,12 +17,14 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/magenta.c \
     $(LOCAL_DIR)/vcpu.c \
 
-MODULE_NAME := guest
-
 MODULE_LIBS := \
 	system/ulib/c \
 	system/ulib/hypervisor \
 	system/ulib/magenta \
 	system/ulib/mxio \
+
+MODULE_STATIC_LIBS := \
+	system/ulib/ddk \
+	system/ulib/virtio \
 
 include make/module.mk

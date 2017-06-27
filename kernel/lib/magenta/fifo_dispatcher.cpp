@@ -10,11 +10,8 @@
 #include <lib/user_copy/user_ptr.h>
 #include <magenta/fifo_dispatcher.h>
 #include <magenta/handle.h>
+#include <magenta/rights.h>
 #include <mxalloc/new.h>
-
-
-constexpr mx_rights_t kDefaultFifoRights =
-    MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE | MX_RIGHT_READ | MX_RIGHT_WRITE;
 
 // static
 status_t FifoDispatcher::Create(uint32_t count, uint32_t elemsize, uint32_t options,
@@ -44,7 +41,7 @@ status_t FifoDispatcher::Create(uint32_t count, uint32_t elemsize, uint32_t opti
     if ((status = fifo1->Init(fifo0)) != MX_OK)
         return status;
 
-    *rights = kDefaultFifoRights;
+    *rights = MX_DEFAULT_FIFO_RIGHTS;
     *dispatcher0 = mxtl::RefPtr<Dispatcher>(fifo0.get());
     *dispatcher1 = mxtl::RefPtr<Dispatcher>(fifo1.get());
     return MX_OK;
@@ -67,6 +64,34 @@ mx_status_t FifoDispatcher::Init(mxtl::RefPtr<FifoDispatcher> other) TA_NO_THREA
     peer_koid_ = other_->get_koid();
     if ((data_ = (uint8_t*) calloc(elem_count_, elem_size_)) == nullptr)
         return MX_ERR_NO_MEMORY;
+    return MX_OK;
+}
+
+mx_status_t FifoDispatcher::user_signal(uint32_t clear_mask, uint32_t set_mask, bool peer) {
+    canary_.Assert();
+
+    if ((set_mask & ~MX_USER_SIGNAL_ALL) || (clear_mask & ~MX_USER_SIGNAL_ALL))
+        return MX_ERR_INVALID_ARGS;
+
+    if (!peer) {
+        state_tracker_.UpdateState(clear_mask, set_mask);
+        return MX_OK;
+    }
+
+    mxtl::RefPtr<FifoDispatcher> other;
+    {
+        AutoLock lock(&lock_);
+        if (!other_)
+            return MX_ERR_PEER_CLOSED;
+        other = other_;
+    }
+
+    return other->UserSignalSelf(clear_mask, set_mask);
+}
+
+mx_status_t FifoDispatcher::UserSignalSelf(uint32_t clear_mask, uint32_t set_mask) {
+    canary_.Assert();
+    state_tracker_.UpdateState(clear_mask, set_mask);
     return MX_OK;
 }
 

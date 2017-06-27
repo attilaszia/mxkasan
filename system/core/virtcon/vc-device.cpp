@@ -14,10 +14,7 @@
 
 #include <mxtl/auto_lock.h>
 
-#define VCDEBUG 0
-
 #include "vc.h"
-#include "vcdebug.h"
 
 static uint32_t default_palette[] = {
     // 0-7 Normal/dark versions of colors
@@ -64,14 +61,14 @@ static mx_status_t vc_setup(vc_t* vc) {
     vc->text_buf = reinterpret_cast<vc_char_t*>(
         calloc(1, vc->rows * vc->columns * sizeof(vc_char_t)));
     if (!vc->text_buf)
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     // allocate the scrollback buffer
     vc->scrollback_buf = reinterpret_cast<vc_char_t*>(
         calloc(1, vc->scrollback_rows_max * vc->columns * sizeof(vc_char_t)));
     if (!vc->scrollback_buf) {
         free(vc->text_buf);
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     // set up the default palette
@@ -79,7 +76,7 @@ static mx_status_t vc_setup(vc_t* vc) {
     vc->front_color = DEFAULT_FRONT_COLOR;
     vc->back_color = DEFAULT_BACK_COLOR;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static void vc_invalidate(void* cookie, int x0, int y0, int w, int h) {
@@ -436,7 +433,7 @@ mx_status_t vc_alloc(vc_t** out) {
     vc_t* vc =
         reinterpret_cast<vc_t*>(calloc(1, sizeof(vc_t)));
     if (!vc) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     vc->fd = -1;
 
@@ -460,7 +457,7 @@ mx_status_t vc_alloc(vc_t** out) {
     vc_reset(vc);
 
     *out = vc;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void vc_free(vc_t* vc) {
@@ -471,3 +468,4 @@ void vc_free(vc_t* vc) {
     free(vc->scrollback_buf);
     free(vc);
 }
+

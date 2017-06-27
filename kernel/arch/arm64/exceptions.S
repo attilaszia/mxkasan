@@ -15,11 +15,15 @@
 .align 12
 
 #define lr x30
-#define regsave_long_offset (30 * 8)
-#define regsave_short_offset (20 * 8)
+
+// offset where sp,elr,spsr,lr goes in the iframe
+#define regsave_special_reg_offset (30 * 8)
+
+// offset where x20-x29 goes in the iframe
+#define regsave_high_reg_offset (20 * 8)
 
 .macro regsave_long
-sub  sp, sp, #32
+sub  sp, sp, #(4*8)
 push x28, x29
 push x26, x27
 push x24, x25
@@ -38,13 +42,14 @@ push x0, x1
 mrs  x0, sp_el0
 mrs  x1, elr_el1
 mrs  x2, spsr_el1
-stp  lr, x0, [sp, #regsave_long_offset]
-stp  x1, x2, [sp, #regsave_long_offset + 16]
+stp  lr, x0, [sp, #regsave_special_reg_offset]
+stp  x1, x2, [sp, #regsave_special_reg_offset + 16]
 .endm
 
 .macro regsave_short
-sub  sp, sp, #32
-push x18, xzr
+sub  sp, sp, #(4*8) + (10*8)
+// skip 10 words so that the structure is the same as a long iframe
+push x18, x19
 push x16, x17
 push x14, x15
 push x12, x13
@@ -57,13 +62,22 @@ push x0, x1
 mrs  x0, sp_el0
 mrs  x1, elr_el1
 mrs  x2, spsr_el1
-stp  lr, x0, [sp, #regsave_short_offset]
-stp  x1, x2, [sp, #regsave_short_offset + 16]
+stp  lr, x0, [sp, #regsave_special_reg_offset]
+stp  x1, x2, [sp, #regsave_special_reg_offset + 16]
+.endm
+
+// convert a short iframe to a long one by patching in the additional 10 words to save
+.macro regsave_short_to_long
+stp  x20, x21, [sp, #regsave_high_reg_offset]
+stp  x22, x23, [sp, #regsave_high_reg_offset + 0x10]
+stp  x24, x25, [sp, #regsave_high_reg_offset + 0x20]
+stp  x26, x27, [sp, #regsave_high_reg_offset + 0x30]
+stp  x28, x29, [sp, #regsave_high_reg_offset + 0x40]
 .endm
 
 .macro regrestore_long
-ldp  lr, x0, [sp, #regsave_long_offset]
-ldp  x1, x2, [sp, #regsave_long_offset + 16]
+ldp  lr, x0, [sp, #regsave_special_reg_offset]
+ldp  x1, x2, [sp, #regsave_special_reg_offset + 16]
 msr  sp_el0, x0
 msr  elr_el1, x1
 msr  spsr_el1, x2
@@ -82,12 +96,12 @@ pop x22, x23
 pop x24, x25
 pop x26, x27
 pop x28, x29
-add sp, sp, #32
+add sp, sp, #(4*8)
 .endm
 
 .macro regrestore_short
-ldp  lr, x0, [sp, #regsave_short_offset]
-ldp  x1, x2, [sp, #regsave_short_offset + 16]
+ldp  lr, x0, [sp, #regsave_special_reg_offset]
+ldp  x1, x2, [sp, #regsave_special_reg_offset + 16]
 msr  sp_el0, x0
 msr  elr_el1, x1
 msr  spsr_el1, x2
@@ -100,8 +114,8 @@ pop x10, x11
 pop x12, x13
 pop x14, x15
 pop x16, x17
-pop x18, xzr
-add sp, sp, #32
+pop x18, x19
+add sp, sp, #(4*8) + (10*8)
 .endm
 
 .macro invalid_exception, which
@@ -136,33 +150,33 @@ FUNCTION(arm64_exception_base)
 /* exceptions from current EL, using SP0 */
 LOCAL_FUNCTION(arm64_sync_exc_current_el_SP0)
     invalid_exception 0
-END(arm64_sync_exc_current_el_SP0)
+END_FUNCTION(arm64_sync_exc_current_el_SP0)
 
 .org 0x080
 LOCAL_FUNCTION(arm64_irq_current_el_SP0)
     invalid_exception 1
-END(arm64_irq_current_el_SP0)
+END_FUNCTION(arm64_irq_current_el_SP0)
 
 .org 0x100
 LOCAL_FUNCTION(arm64_fiq_current_el_SP0)
     invalid_exception 2
-END(arm64_fiq_current_el_SP0)
+END_FUNCTION(arm64_fiq_current_el_SP0)
 
 .org 0x180
 LOCAL_FUNCTION(arm64_err_exc_current_el_SP0)
     invalid_exception 3
-END(arm64_err_exc_current_el_SP0)
+END_FUNCTION(arm64_err_exc_current_el_SP0)
 
 /* exceptions from current EL, using SPx */
 .org 0x200
 LOCAL_FUNCTION(arm64_sync_exc_current_el_SPx)
     sync_exception #0 /* same EL, arm64 */
-END(arm64_sync_exc_current_el_SPx)
+END_FUNCTION(arm64_sync_exc_current_el_SPx)
 
 .org 0x280
 LOCAL_FUNCTION(arm64_irq_current_el_SPx)
     irq_exception #0 /* same EL, arm64 */
-END(arm64_irq_current_el_SPx)
+END_FUNCTION(arm64_irq_current_el_SPx)
 
 .org 0x300
 LOCAL_FUNCTION(arm64_fiq_current_el_SPx)
@@ -170,23 +184,23 @@ LOCAL_FUNCTION(arm64_fiq_current_el_SPx)
     mov x0, sp
     bl  platform_fiq
     b  arm64_exc_shared_restore_short
-END(arm64_fiq_current_el_SPx)
+END_FUNCTION(arm64_fiq_current_el_SPx)
 
 .org 0x380
 LOCAL_FUNCTION(arm64_err_exc_current_el_SPx)
     invalid_exception 0x13
-END(arm64_err_exc_current_el_SPx)
+END_FUNCTION(arm64_err_exc_current_el_SPx)
 
 /* exceptions from lower EL, running arm64 */
 .org 0x400
 LOCAL_FUNCTION(arm64_sync_exc_lower_el_64)
     sync_exception #(ARM64_EXCEPTION_FLAG_LOWER_EL)
-END(arm64_sync_exc_lower_el_64)
+END_FUNCTION(arm64_sync_exc_lower_el_64)
 
 .org 0x480
 LOCAL_FUNCTION(arm64_irq_lower_el_64)
     irq_exception #(ARM64_EXCEPTION_FLAG_LOWER_EL)
-END(arm64_irq_lower_el_64)
+END_FUNCTION(arm64_irq_lower_el_64)
 
 .org 0x500
 LOCAL_FUNCTION(arm64_fiq_lower_el_64)
@@ -194,23 +208,23 @@ LOCAL_FUNCTION(arm64_fiq_lower_el_64)
     mov x0, sp
     bl  platform_fiq
     b  arm64_exc_shared_restore_short
-END(arm64_fiq_lower_el_64)
+END_FUNCTION(arm64_fiq_lower_el_64)
 
 .org 0x580
 LOCAL_FUNCTION(arm64_err_exc_lower_el_64)
     invalid_exception 0x23
-END(arm64_err_exc_lower_el_64)
+END_FUNCTION(arm64_err_exc_lower_el_64)
 
 /* exceptions from lower EL, running arm32 */
 .org 0x600
 LOCAL_FUNCTION(arm64_sync_exc_lower_el_32)
     sync_exception #(ARM64_EXCEPTION_FLAG_LOWER_EL|ARM64_EXCEPTION_FLAG_ARM32)
-END(arm64_sync_exc_lower_el_32)
+END_FUNCTION(arm64_sync_exc_lower_el_32)
 
 .org 0x680
 LOCAL_FUNCTION(arm64_irq_lower_el_32)
     irq_exception #(ARM64_EXCEPTION_FLAG_LOWER_EL|ARM64_EXCEPTION_FLAG_ARM32)
-END(arm64_irq_lower_el_32)
+END_FUNCTION(arm64_irq_lower_el_32)
 
 .org 0x700
 LOCAL_FUNCTION(arm64_fiq_lower_el_32)
@@ -218,12 +232,12 @@ LOCAL_FUNCTION(arm64_fiq_lower_el_32)
     mov x0, sp
     bl  platform_fiq
     b  arm64_exc_shared_restore_short
-END(arm64_fiq_lower_el_32)
+END_FUNCTION(arm64_fiq_lower_el_32)
 
 .org 0x780
 LOCAL_FUNCTION(arm64_err_exc_lower_el_32)
     invalid_exception 0x33
-END(arm64_err_exc_lower_el_32)
+END_FUNCTION(arm64_err_exc_lower_el_32)
 
 /* If an IRQ happened in userspace, and either the thread was signaled or
    needs to be rescheduled, then we end up here after arm64_irq returns.
@@ -241,29 +255,20 @@ LOCAL_FUNCTION(arm64_finish_user_irq_wrapper)
     msr daifset, #1 /* disable fiqs to protect elr and spsr restore */
     b   arm64_exc_shared_restore_short
 1:
-    /* need to construct a long iframe
-       Since we're going to be suspending the thread, keep it simple and just
-       undo the short frame and replace it with a long frame. */
-    mrs x1, tpidr_el1
-    str w0, [x1, #ARM64_SAVED_EXIT_FLAGS_OFFSET]
-    msr daifset, #1 /* disable fiqs to protect elr and spsr restore */
-    regrestore_short
-    regsave_long
-    msr daifclr, #1 /* reenable fiqs once elr and spsr have been saved */
-    mrs x1, tpidr_el1
-    ldr w0, [x1, #ARM64_SAVED_EXIT_FLAGS_OFFSET]
+    /* convert the short to a long frame */
+    regsave_short_to_long
     mov x1, sp
     bl  arm64_finish_user_irq
     msr daifset, #1 /* disable fiqs to protect elr and spsr restore */
     b   arm64_exc_shared_restore_long
-END(arm64_finish_user_irq_wrapper)
+END_FUNCTION(arm64_finish_user_irq_wrapper)
 
 LOCAL_FUNCTION(arm64_exc_shared_restore_long)
     regrestore_long
     eret
-END(arm64_exc_shared_restore_long)
+END_FUNCTION(arm64_exc_shared_restore_long)
 
 LOCAL_FUNCTION(arm64_exc_shared_restore_short)
     regrestore_short
     eret
-END(arm64_exc_shared_restore_short)
+END_FUNCTION(arm64_exc_shared_restore_short)

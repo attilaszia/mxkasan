@@ -29,6 +29,8 @@
 
 bool arm64_in_int_handler[SMP_MAX_CPUS];
 
+static void arm64_thread_process_pending_signals(struct arm64_iframe_long *iframe);
+
 static void dump_iframe(const struct arm64_iframe_long *iframe)
 {
     printf("iframe %p:\n", iframe);
@@ -175,7 +177,7 @@ static void arm64_instruction_abort_handler(struct arm64_iframe_long *iframe, ui
     /* if this is from user space, let magenta get a shot at it */
     if (is_user) {
         CPU_STATS_INC(exceptions);
-        if (call_magenta_data_fault_exception_handler (MX_EXCP_FATAL_PAGE_FAULT, iframe, esr, far) == NO_ERROR)
+        if (call_magenta_data_fault_exception_handler (MX_EXCP_FATAL_PAGE_FAULT, iframe, esr, far) == MX_OK)
             return;
     }
 #endif
@@ -233,7 +235,7 @@ static void arm64_data_abort_handler(struct arm64_iframe_long *iframe, uint exce
         if (unlikely(dfsc == DFSC_ALIGNMENT_FAULT)) {
             excp_type = MX_EXCP_UNALIGNED_ACCESS;
         }
-        if (call_magenta_data_fault_exception_handler (excp_type, iframe, esr, far) == NO_ERROR)
+        if (call_magenta_data_fault_exception_handler (excp_type, iframe, esr, far) == MX_OK)
             return;
     }
 #endif
@@ -294,7 +296,7 @@ extern "C" void arm64_sync_exception(struct arm64_iframe_long *iframe, uint exce
             }
 #if WITH_LIB_MAGENTA
             /* let magenta get a shot at it */
-            if (call_magenta_exception_handler (MX_EXCP_GENERAL, iframe, esr) == NO_ERROR)
+            if (call_magenta_exception_handler (MX_EXCP_GENERAL, iframe, esr) == MX_OK)
                 break;
 #endif
             printf("unhandled synchronous exception\n");
@@ -365,7 +367,7 @@ extern "C" void arm64_invalid_exception(struct arm64_iframe_long *iframe, unsign
     platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
 }
 
-void arm64_thread_process_pending_signals(struct arm64_iframe_long *iframe)
+static void arm64_thread_process_pending_signals(struct arm64_iframe_long *iframe)
 {
     thread_t *thread = get_current_thread();
     DEBUG_ASSERT(iframe != nullptr);
@@ -405,7 +407,7 @@ void arch_dump_exception_context(const arch_exception_context_t *context)
     // try to dump the user stack
     if (is_user_address(context->frame->usp)) {
         uint8_t buf[256];
-        if (copy_from_user_unsafe(buf, (void *)context->frame->usp, sizeof(buf)) == NO_ERROR) {
+        if (copy_from_user_unsafe(buf, (void *)context->frame->usp, sizeof(buf)) == MX_OK) {
             printf("bottom of user stack at 0x%lx:\n", (vaddr_t)context->frame->usp);
             hexdump_ex(buf, sizeof(buf), context->frame->usp);
         }
@@ -433,6 +435,17 @@ void arch_fill_in_suspension_context(mx_exception_report_t *report)
     mx_exception_context_t *mx_context = &report->context;
 
     mx_context->arch_id = ARCH_ID_ARM_64;
+}
+
+status_t magenta_report_syscall_exception(void)
+{
+    struct arm64_iframe_long frame = {};
+    arch_exception_context_t context = {};
+    context.frame = &frame;
+    // TODO(mseaborn): Implement reporting the pc register value.
+    mx_vaddr_t pc_register_value = 0;
+    return magenta_exception_handler(MX_EXCP_GENERAL, &context,
+                                     pc_register_value);
 }
 
 #endif

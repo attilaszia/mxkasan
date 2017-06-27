@@ -110,9 +110,9 @@ static size_t *saved_addends, *apply_addends_to;
 
 static struct dso ldso, vdso;
 static struct dso *head, *tail, *fini_head;
+static struct dso *detached_head;
 static unsigned long long gencnt;
 static int runtime;
-static int ldd_mode;
 static int ldso_fail;
 static jmp_buf* rtld_fail;
 static pthread_rwlock_t lock;
@@ -628,8 +628,8 @@ __NO_SAFESTACK NO_ASAN static mx_status_t map_library(mx_handle_t vmo,
     }
 
     char vmo_name[MX_MAX_NAME_LEN];
-    if (mx_object_get_property(vmo, MX_PROP_NAME,
-                               vmo_name, sizeof(vmo_name)) != MX_OK ||
+    if (_mx_object_get_property(vmo, MX_PROP_NAME,
+                                vmo_name, sizeof(vmo_name)) != MX_OK ||
         vmo_name[0] == '\0')
         memcpy(vmo_name, VMO_NAME_UNKNOWN, sizeof(VMO_NAME_UNKNOWN));
 
@@ -794,63 +794,38 @@ __NO_SAFESTACK static struct dso* find_library_in(struct dso* p,
 }
 
 __NO_SAFESTACK static struct dso* find_library(const char* name) {
-    int is_self = 0;
-
-    /* Catch and block attempts to reload the implementation itself */
-    if (name[0] == 'l' && name[1] == 'i' && name[2] == 'b') {
-        static const char *rp, reserved[] = "c\0pthread\0rt\0m\0dl\0util\0xnet\0";
-        char* z = strchr(name, '.');
-        if (z) {
-            size_t l = z - name;
-            for (rp = reserved; *rp && strncmp(name + 3, rp, l - 3); rp += strlen(rp) + 1)
-                ;
-            if (*rp) {
-                if (ldd_mode) {
-                    /* Track which names have been resolved
-                     * and only report each one once. */
-                    static unsigned reported;
-                    unsigned mask = 1U << (rp - reserved);
-                    if (!(reported & mask)) {
-                        reported |= mask;
-                        debugmsg("\t%s => %s (%p)\n",
-                                 name, ldso.name, ldso.base);
-                    }
-                }
-                is_self = 1;
-            }
-        }
-    }
-    if (!strcmp(name, ldso.name))
-        is_self = 1;
-    if (is_self) {
-        if (!ldso.prev) {
-            tail->next = &ldso;
-            ldso.prev = tail;
-            tail = ldso.next ? ldso.next : &ldso;
-        }
-        return &ldso;
-    }
-
     // First see if it's in the general list.
     struct dso* p = find_library_in(head, name);
-    if (p == NULL && ldso.prev == NULL) {
+    if (p == NULL && detached_head != NULL) {
         // ldso is not in the list yet, so the first search didn't notice
         // anything that is only a dependency of ldso, i.e. the vDSO.
         // See if the lookup by name matches ldso or its dependencies.
-        p = find_library_in(&ldso, name);
-        if (p != NULL) {
-            // Take it out of its place in the list rooted at ldso.
+        p = find_library_in(detached_head, name);
+        if (p == &ldso) {
+            // If something depends on libc (&ldso), we actually want
+            // to pull in the entire detached list in its existing
+            // order (&ldso is always last), so that libc stays after
+            // its own dependencies.
+            detached_head->prev = tail;
+            tail->next = detached_head;
+            tail = p;
+            detached_head = NULL;
+        } else if (p != NULL) {
+            // Take it out of its place in the list rooted at detached_head.
             if (p->prev != NULL)
                 p->prev->next = p->next;
-            if (p->next != NULL)
+            else
+                detached_head = p->next;
+            if (p->next != NULL) {
                 p->next->prev = p->prev;
+                p->next = NULL;
+            }
             // Stick it on the main list.
             tail->next = p;
             p->prev = tail;
             tail = p;
         }
     }
-
     return p;
 }
 
@@ -1055,9 +1030,6 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
     p->prev = tail;
     tail = p;
 
-    if (ldd_mode)
-        debugmsg("\t%s => %s (%p)\n", p->soname, name, p->base);
-
     *loaded = p;
     return MX_OK;
 }
@@ -1084,11 +1056,9 @@ __NO_SAFESTACK static mx_status_t load_library(const char* name, int rtld_mode,
 
 __NO_SAFESTACK static void load_deps(struct dso* p) {
     for (; p; p = p->next) {
-        // These don't get space allocated for ->deps.
-        if (p == &ldso || p == &vdso)
-            continue;
         struct dso** deps = NULL;
-        if (runtime && p->deps == NULL)
+        // The two preallocated DSOs don't get space allocated for ->deps.
+        if (runtime && p->deps == NULL && p != &ldso && p != &vdso)
             deps = p->deps = p->buf;
         for (size_t i = 0; p->dynv[i].d_tag; i++) {
             if (p->dynv[i].d_tag != DT_NEEDED)
@@ -1392,7 +1362,7 @@ dl_start_return_t __dls2(
         decode_dyn(&vdso);
 
         vdso.prev = &ldso;
-        ldso.next = &vdso;
+        tail = ldso.next = &vdso;
     }
 
     /* Prepare storage for to save clobbered REL addends so they
@@ -1431,9 +1401,23 @@ dl_start_return_t __dls2(
  * transfer control to its entry point. */
 
 __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
+    // First load our own dependencies.  Usually this will be just the
+    // vDSO, which is already loaded, so there will be nothing to do.
+    // In a sanitized build, we'll depend on the sanitizer runtime DSO
+    // and load that now (and its dependencies, such as the unwinder).
+    load_deps(&ldso);
+
+    // Now reorder the list so that we appear last, after all our
+    // dependencies.  This ensures that e.g. the sanitizer runtime's
+    // malloc will be chosen over ours, even if the application
+    // doesn't itself depend on the sanitizer runtime SONAME.
+    ldso.next->prev = NULL;
+    detached_head = ldso.next;
+    ldso.prev = tail;
+    ldso.next = NULL;
+    tail->next = &ldso;
+
     static struct dso app;
-    size_t i;
-    char** argv_orig = argv;
 
     if (argc < 1 || argv[0] == NULL) {
         static const char* dummy_argv0 = "";
@@ -1456,48 +1440,6 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
             trace_maps = true;
     }
 
-    if (exec_vmo == MX_HANDLE_INVALID) {
-        char* ldname = argv[0];
-        size_t l = strlen(ldname);
-        if (l >= 3 && !strcmp(ldname + l - 3, "ldd"))
-            ldd_mode = 1;
-        argv++;
-        while (argv[0] && argv[0][0] == '-' && argv[0][1] == '-') {
-            char* opt = argv[0] + 2;
-            *argv++ = (void*)-1;
-            if (!*opt) {
-                break;
-            } else if (!memcmp(opt, "list", 5)) {
-                ldd_mode = 1;
-            } else if (!memcmp(opt, "preload", 7)) {
-                if (opt[7] == '=')
-                    ld_preload = opt + 8;
-                else if (opt[7])
-                    *argv = 0;
-                else if (*argv)
-                    ld_preload = *argv++;
-            } else {
-                argv[0] = 0;
-            }
-        }
-        argc -= argv - argv_orig;
-        if (!argv[0]) {
-            debugmsg("musl libc (" LDSO_ARCH ")\n"
-                     "Dynamic Program Loader\n"
-                     "Usage: %s [options] [--] pathname%s\n",
-                     ldname, ldd_mode ? "" : " [args]");
-            _exit(1);
-        }
-
-        ldso.name = ldname;
-
-        mx_status_t status = get_library_vmo(argv[0], &exec_vmo);
-        if (status != MX_OK) {
-            debugmsg("%s: cannot load %s: %d\n", ldname, argv[0], status);
-            _exit(1);
-        }
-    }
-
     mx_status_t status = map_library(exec_vmo, &app);
     _mx_handle_close(exec_vmo);
     if (status != MX_OK) {
@@ -1507,16 +1449,6 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
     }
 
     app.name = argv[0];
-
-    /* Find the name that would have been used for the dynamic
-     * linker had ldd not taken its place. */
-    if (ldd_mode) {
-        for (i = 0; i < app.phnum; i++) {
-            if (app.phdr[i].p_type == PT_INTERP)
-                ldso.name = laddr(&app, app.phdr[i].p_vaddr);
-        }
-        debugmsg("\t%s (%p)\n", ldso.name, ldso.base);
-    }
 
     if (app.tls.size) {
         libc.tls_head = tls_tail = &app.tls;
@@ -1545,7 +1477,7 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
     load_deps(&app);
     make_global(&app);
 
-    for (i = 0; app.dynv[i].d_tag; i++) {
+    for (size_t i = 0; app.dynv[i].d_tag; i++) {
         if (!DT_DEBUG_INDIRECT && app.dynv[i].d_tag == DT_DEBUG)
             app.dynv[i].d_un.d_ptr = (size_t)&debug;
         if (DT_DEBUG_INDIRECT && app.dynv[i].d_tag == DT_DEBUG_INDIRECT) {
@@ -1564,8 +1496,6 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
 
     if (ldso_fail)
         _exit(127);
-    if (ldd_mode)
-        _exit(0);
 
     /* Switch to runtime mode: any further failures in the dynamic
      * linker are a reportable failure rather than a fatal startup
@@ -1623,7 +1553,7 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
 
     // Check for a PT_GNU_STACK header requesting a main thread stack size.
     libc.stack_size = DEFAULT_PTHREAD_ATTR._a_stacksize;
-    for (i = 0; i < app.phnum; i++) {
+    for (size_t i = 0; i < app.phnum; i++) {
         if (app.phdr[i].p_type == PT_GNU_STACK) {
             size_t size = app.phdr[i].p_memsz;
             if (size > 0)
@@ -2057,6 +1987,7 @@ static mx_txid_t loader_svc_txid;
 
 __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
                                                  const void* data, size_t len,
+                                                 mx_handle_t request_handle,
                                                  mx_handle_t* result) {
     mx_status_t status;
     struct {
@@ -2067,6 +1998,7 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
     loader_svc_rpc_in_progress = true;
 
     if (len >= sizeof msg.data) {
+        _mx_handle_close(request_handle);
         error("message of %zu bytes too large for loader service protocol",
               len);
         status = MX_ERR_OUT_OF_RANGE;
@@ -2087,6 +2019,8 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
     mx_channel_call_args_t call = {
         .wr_bytes = &msg,
         .wr_num_bytes = sizeof(msg.header) + len + 1,
+        .wr_handles = &request_handle,
+        .wr_num_handles = request_handle == MX_HANDLE_INVALID ? 0 : 1,
         .rd_bytes = &msg,
         .rd_num_bytes = sizeof(msg),
         .rd_handles = result,
@@ -2104,7 +2038,9 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
               "%d (%s), read %d (%s)",
               call.wr_num_bytes, status, _mx_status_get_string(status),
               read_status, _mx_status_get_string(read_status));
-        if (status == MX_ERR_CALL_FAILED && read_status != MX_OK)
+        if (status != MX_ERR_CALL_FAILED)
+            _mx_handle_close(request_handle);
+        else if (read_status != MX_OK)
             status = read_status;
         goto out;
     }
@@ -2116,6 +2052,10 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
         goto out;
     }
     if (msg.header.opcode != LOADER_SVC_OP_STATUS) {
+        if (handle_count > 0) {
+            _mx_handle_close(*result);
+            *result = MX_HANDLE_INVALID;
+        }
         error("loader service reply opcode %u != %u",
               msg.header.opcode, LOADER_SVC_OP_STATUS);
         status = MX_ERR_INVALID_ARGS;
@@ -2145,7 +2085,7 @@ __NO_SAFESTACK static mx_status_t get_library_vmo(const char* name,
         return MX_ERR_UNAVAILABLE;
     }
     return loader_svc_rpc(LOADER_SVC_OP_LOAD_OBJECT, name, strlen(name),
-                          result);
+                          MX_HANDLE_INVALID, result);
 }
 
 __NO_SAFESTACK static void log_write(const void* buf, size_t len) {
@@ -2158,7 +2098,8 @@ __NO_SAFESTACK static void log_write(const void* buf, size_t len) {
     if (logger != MX_HANDLE_INVALID)
         status = _mx_log_write(logger, len, buf, 0);
     else if (!loader_svc_rpc_in_progress && loader_svc != MX_HANDLE_INVALID)
-        status = loader_svc_rpc(LOADER_SVC_OP_DEBUG_PRINT, buf, len, NULL);
+        status = loader_svc_rpc(LOADER_SVC_OP_DEBUG_PRINT, buf, len,
+                                MX_HANDLE_INVALID, NULL);
     else {
         int n = _mx_debug_write(buf, len);
         status = n < 0 ? n : MX_OK;
@@ -2213,4 +2154,18 @@ __NO_SAFESTACK static void error(const char* fmt, ...) {
     }
     __dl_vseterr(fmt, ap);
     va_end(ap);
+}
+
+// We piggy-back on the loader service to publish data from sanitizers.
+void __sanitizer_publish_data(const char* sink_name, mx_handle_t vmo) {
+    pthread_rwlock_rdlock(&lock);
+    mx_status_t status = loader_svc_rpc(LOADER_SVC_OP_PUBLISH_DATA_SINK,
+                                        sink_name, strlen(sink_name),
+                                        vmo, NULL);
+    if (status != MX_OK) {
+        // TODO(mcgrathr): Send this whereever sanitizer logging goes.
+        debugmsg("Failed to publish data sink \"%s\" (%s): %s\n",
+                 sink_name, _mx_status_get_string(status), dlerror());
+    }
+    pthread_rwlock_unlock(&lock);
 }

@@ -9,17 +9,24 @@
 #include <arch/arm64.h>
 #include <magenta/compiler.h>
 #include <reg.h>
+#include <arch/spinlock.h>
 
 __BEGIN_CDECLS
 
 // bits for mpidr register
 #define MPIDR_AFF0_MASK     0xFFULL
 #define MPIDR_AFF0_SHIFT    0
-#define MPIDR_AFF1_MASK     0xFF00ULL
+#define MPIDR_AFF1_MASK     (0xFFULL << 8)
 #define MPIDR_AFF1_SHIFT    8
+#define MPIDR_AFF2_MASK     (0xFFULL << 16)
+#define MPIDR_AFF2_SHIFT    16
+#define MPIDR_AFF3_MASK     (0xFFULL << 32)
+#define MPIDR_AFF3_SHIFT    32
 
 #define ARM64_MPID(cluster, cpu) (((cluster << MPIDR_AFF1_SHIFT) & MPIDR_AFF1_MASK) | \
                                   ((cpu << MPIDR_AFF0_SHIFT) & MPIDR_AFF0_MASK))
+
+// TODO: add support for AFF2 and AFF3
 
 void arch_init_cpu_map(uint cluster_count, uint* cluster_cpus);
 
@@ -59,7 +66,15 @@ static inline bool arch_in_int_handler(void)
 {
     extern bool arm64_in_int_handler[SMP_MAX_CPUS];
 
-    return arm64_in_int_handler[arch_curr_cpu_num()];
+    spin_lock_saved_state_t state;
+
+    arch_interrupt_save(&state, ARCH_DEFAULT_SPIN_LOCK_FLAG_INTERRUPTS);
+
+    const bool result = arm64_in_int_handler[arch_curr_cpu_num()];
+
+    arch_interrupt_restore(state, ARCH_DEFAULT_SPIN_LOCK_FLAG_INTERRUPTS);
+
+    return result;
 }
 
 __END_CDECLS

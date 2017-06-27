@@ -7,7 +7,7 @@
 #include "blobstore.h"
 
 #include <bitmap/raw-bitmap.h>
-#include <merkle/digest.h>
+#include <digest/digest.h>
 #include <mx/event.h>
 #include <mx/vmo.h>
 #include <mxtl/algorithm.h>
@@ -16,6 +16,8 @@
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
 
+#include <block-client/client.h>
+#include <fs/block-txn.h>
 #include <fs/mapped-vmo.h>
 #include <fs/vfs.h>
 
@@ -24,7 +26,13 @@ namespace blobstore {
 class Blobstore;
 class VnodeBlob;
 
+using WriteTxn = fs::WriteTxn<kBlobstoreBlockSize, Blobstore>;
+using ReadTxn = fs::ReadTxn<kBlobstoreBlockSize, Blobstore>;
+using digest::Digest;
+
 typedef uint32_t BlobFlags;
+
+// clang-format off
 
 // After Open;
 constexpr BlobFlags kBlobStateEmpty       = 0x00010000; // Not yet allocated
@@ -43,6 +51,8 @@ constexpr BlobFlags kBlobFlagSync         = 0x01000000; // The blob is being wri
 constexpr BlobFlags kBlobFlagDeletable    = 0x02000000; // This node should be unlinked when closed
 constexpr BlobFlags kBlobFlagDirectory    = 0x04000000; // This node represents the root directory
 constexpr BlobFlags kBlobOtherMask        = 0xFF000000;
+
+// clang-format on
 
 static_assert(((kBlobStateMask | kBlobOtherMask) & V_FLAG_RESERVED_MASK) == 0,
               "Blobstore flags conflict with VFS-reserved flags");
@@ -88,7 +98,7 @@ public:
     // Constructs the "directory" blob
     VnodeBlob(mxtl::RefPtr<Blobstore> bs);
     // Constructs actual blobs
-    VnodeBlob(mxtl::RefPtr<Blobstore> bs, const merkle::Digest& digest);
+    VnodeBlob(mxtl::RefPtr<Blobstore> bs, const Digest& digest);
     virtual ~VnodeBlob();
 
 private:
@@ -101,7 +111,7 @@ private:
     // Returns a handle to an event which will be signalled when
     // the blob is readable.
     //
-    // Returns "NO_ERROR" if blob is already readable.
+    // Returns "MX_OK" if blob is already readable.
     // Otherwise, returns size of the handle.
     mx_status_t GetReadableEvent(mx_handle_t* out);
 
@@ -146,37 +156,43 @@ private:
     // the contents of a VMO into memory when it is opened.
     mx_status_t InitVmos();
 
-    mx_status_t WriteShared(size_t start, size_t len, uint64_t maxlen,
-                            mx_handle_t vmo, uint64_t start_block);
+    mx_status_t WriteShared(WriteTxn* txn, size_t start, size_t len, uint64_t start_block);
     // Called by Blob once the last write has completed, updating the
     // on-disk metadata.
     mx_status_t WriteMetadata();
 
+    // Acquire a pointer to the mapped data or merkle tree
+    void* GetData() const;
+    void* GetMerkle() const;
+
     WAVLTreeNodeState type_wavl_state_;
 
     const mxtl::RefPtr<Blobstore> blobstore_;
-    mxtl::unique_ptr<MappedVmo> merkle_tree_;
+    // The blob_ here consists of:
+    // 1) The Merkle Tree
+    // 2) The Blob itself, aligned to the nearest kBlobstoreBlockSize
     mxtl::unique_ptr<MappedVmo> blob_;
+    vmoid_t vmoid_;
 
     mx::event readable_event_;
     uint64_t bytes_written_;
 
     BlobFlags flags_;
-    uint8_t digest_[merkle::Digest::kLength];
+    uint8_t digest_[Digest::kLength];
 
     size_t map_index_;
 };
 
 // We need to define this structure to allow the Blob to be indexable by a key
-// which is larger than a primitive type: the keys are 'merkle::Digest::kLength'
+// which is larger than a primitive type: the keys are 'Digest::kLength'
 // bytes long.
 struct MerkleRootTraits {
     static const uint8_t* GetKey(const VnodeBlob& obj) { return obj.GetKey(); }
     static bool LessThan(const uint8_t* k1, const uint8_t* k2) {
-        return memcmp(k1, k2, merkle::Digest::kLength) < 0;
+        return memcmp(k1, k2, Digest::kLength) < 0;
     }
     static bool EqualTo(const uint8_t* k1, const uint8_t* k2) {
-        return memcmp(k1, k2, merkle::Digest::kLength) == 0;
+        return memcmp(k1, k2, Digest::kLength) == 0;
     }
 };
 
@@ -185,36 +201,49 @@ public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Blobstore);
     friend class VnodeBlob;
 
-    static mx_status_t Create(int blockfd, const blobstore_info_t* info, mxtl::RefPtr<VnodeBlob>* out);
+    static mx_status_t Create(int blockfd, const blobstore_info_t* info, mxtl::RefPtr<Blobstore>* out);
+
     mx_status_t Unmount();
     virtual ~Blobstore();
+
+    // Returns the root blob
+    mx_status_t GetRootBlob(mxtl::RefPtr<VnodeBlob>* out);
 
     // Searches for a blob by name.
     // - If a readable blob with the same name exists, return it.
     // - If a blob with the same name exists, but it is not readable,
-    //   ERR_BAD_STATE is returned.
+    //   MX_ERR_BAD_STATE is returned.
     //
     // 'out' may be null -- the same error code will be returned as if it
     // was a valid pointer.
     //
     // If 'out' is not null, then the blob's  will be added to the
     // "quick lookup" map if it was not there already.
-    mx_status_t LookupBlob(const merkle::Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
+    mx_status_t LookupBlob(const Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
 
     // Creates a new blob in-memory, with no backing disk storage (yet).
     // If a blob with the name already exists, this function fails.
     //
     // Adds Blob to the "quick lookup" map.
-    mx_status_t NewBlob(const merkle::Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
+    mx_status_t NewBlob(const Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
 
     // Removes blob from 'active' hashmap.
     mx_status_t ReleaseBlob(VnodeBlob* blob);
 
     mx_status_t Readdir(void* cookie, void* dirents, size_t len);
 
+    mx_status_t AttachVmo(mx_handle_t vmo, vmoid_t* out);
+    mx_status_t Txn(block_fifo_request_t* requests, size_t count) {
+        return block_fifo_txn(fifo_client_, requests, count);
+    }
+    txnid_t TxnId() const { return txnid_; }
+
     int blockfd_;
     blobstore_info_t info_;
+
 private:
+    friend class BlobstoreChecker;
+
     Blobstore(int fd, const blobstore_info_t* info);
     mx_status_t LoadBitmaps();
 
@@ -226,17 +255,18 @@ private:
     mx_status_t AllocateNode(size_t* node_index_out);
     void FreeNode(size_t node_index);
 
-    // Access the nth block of the block bitmap.
-    void* GetBlockmapData(uint64_t n) const;
-    // Access the nth block of the node map.
-    void* GetNodemapData(uint64_t n) const;
+    // Access the nth inode of the node map
+    blobstore_inode_t* GetNode(size_t index) const;
 
     // Given a contiguous number of blocks after a starting block,
     // write out the bitmap to disk for the corresponding blocks.
-    mx_status_t WriteBitmap(uint64_t nblocks, uint64_t start_block);
+    mx_status_t WriteBitmap(WriteTxn* txn, uint64_t nblocks, uint64_t start_block);
 
     // Given a node within the node map at an index, write it to disk.
-    mx_status_t WriteNode(size_t map_index);
+    mx_status_t WriteNode(WriteTxn* txn, size_t map_index);
+
+    // Enqueues an update for allocated inode/block counts
+    mx_status_t CountUpdate(WriteTxn* txn);
 
     // VnodeBlobs exist in the WAVLTree as long as one or more reference exists;
     // when the Vnode is deleted, it is immediately removed from the WAVL tree.
@@ -246,13 +276,36 @@ private:
                                             VnodeBlob::TypeWavlTraits>;
     WAVLTreeByMerkle hash_; // Map of all 'in use' blobs
 
+    fifo_client_t* fifo_client_;
+    txnid_t txnid_;
     RawBitmap block_map_;
-    mxtl::unique_ptr<blobstore_inode_t[]> node_map_;
+    vmoid_t block_map_vmoid_;
+    mxtl::unique_ptr<MappedVmo> node_map_;
+    vmoid_t node_map_vmoid_;
+    mxtl::unique_ptr<MappedVmo> info_vmo_;
+    vmoid_t info_vmoid_;
+};
+
+class BlobstoreChecker {
+public:
+    BlobstoreChecker();
+    void Init(mxtl::RefPtr<Blobstore> vnode);
+    void TraverseInodeBitmap();
+    void TraverseBlockBitmap();
+    mx_status_t CheckAllocatedCounts() const;
+
+private:
+    DISALLOW_COPY_ASSIGN_AND_MOVE(BlobstoreChecker);
+    mxtl::RefPtr<Blobstore> blobstore_;
+    uint32_t alloc_inodes_;
+    uint32_t alloc_blocks_;
 };
 
 int blobstore_mkfs(int fd);
 
 mx_status_t blobstore_mount(mxtl::RefPtr<VnodeBlob>* out, int blockfd);
+mx_status_t blobstore_create(mxtl::RefPtr<Blobstore>* out, int blockfd);
+mx_status_t blobstore_check(mxtl::RefPtr<Blobstore> vnode);
 
 mx_status_t readblk(int fd, uint64_t bno, void* data);
 mx_status_t writeblk(int fd, uint64_t bno, const void* data);

@@ -8,9 +8,8 @@
 #include <magenta/fifo_dispatcher.h>
 #include <magenta/guest_dispatcher.h>
 #include <magenta/hypervisor_dispatcher.h>
+#include <magenta/rights.h>
 #include <mxalloc/new.h>
-
-constexpr mx_rights_t kDefaultGuestRights = MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_EXECUTE;
 
 // static
 mx_status_t GuestDispatcher::Create(mxtl::RefPtr<HypervisorDispatcher> hypervisor,
@@ -19,7 +18,7 @@ mx_status_t GuestDispatcher::Create(mxtl::RefPtr<HypervisorDispatcher> hyperviso
                                     mxtl::RefPtr<Dispatcher>* dispatcher,
                                     mx_rights_t* rights) {
     mxtl::unique_ptr<GuestContext> context;
-    mx_status_t status = arch_guest_create(phys_mem, ctl_fifo, &context);
+    status_t status = arch_guest_create(hypervisor->context(), phys_mem, ctl_fifo, &context);
     if (status != MX_OK)
         return status;
 
@@ -28,7 +27,7 @@ mx_status_t GuestDispatcher::Create(mxtl::RefPtr<HypervisorDispatcher> hyperviso
     if (!ac.check())
         return MX_ERR_NO_MEMORY;
 
-    *rights = kDefaultGuestRights;
+    *rights = MX_DEFAULT_GUEST_RIGHTS;
     *dispatcher = mxtl::RefPtr<Dispatcher>(guest.get());
     return MX_OK;
 }
@@ -49,6 +48,12 @@ mx_status_t GuestDispatcher::MemTrap(mx_vaddr_t guest_paddr, size_t size) {
     canary_.Assert();
 
     return arch_guest_mem_trap(context_, guest_paddr, size);
+}
+
+mx_status_t GuestDispatcher::Interrupt(uint8_t interrupt) {
+    canary_.Assert();
+
+    return arch_guest_interrupt(context_, interrupt);
 }
 
 mx_status_t GuestDispatcher::SetGpr(const mx_guest_gpr_t& guest_gpr) {

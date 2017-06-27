@@ -223,9 +223,9 @@ static block_callbacks_t cb = {
     blockserver_fifo_complete,
 };
 
-mx_status_t BlockServer::Serve(mx_device_t* dev, block_ops_t* ops) {
+mx_status_t BlockServer::Serve(block_protocol_t* proto) {
 
-    ops->set_callbacks(dev, &cb);
+    proto->ops->set_callbacks(proto->ctx, &cb);
 
     mx_status_t status;
     block_fifo_request_t requests[BLOCK_FIFO_MAX_DEPTH];
@@ -285,11 +285,11 @@ mx_status_t BlockServer::Serve(mx_device_t* dev, block_ops_t* ops) {
                 }
 
                 if ((requests[i].opcode & BLOCKIO_OP_MASK) == BLOCKIO_READ) {
-                    ops->read(dev, iobuf->io_vmo_.get(), requests[i].length,
-                              requests[i].vmo_offset, requests[i].dev_offset, msg);
+                    proto->ops->read(proto->ctx, iobuf->io_vmo_.get(), requests[i].length,
+                                     requests[i].vmo_offset, requests[i].dev_offset, msg);
                 } else {
-                    ops->write(dev, iobuf->io_vmo_.get(), requests[i].length,
-                               requests[i].vmo_offset, requests[i].dev_offset, msg);
+                    proto->ops->write(proto->ctx, iobuf->io_vmo_.get(), requests[i].length,
+                                      requests[i].vmo_offset, requests[i].dev_offset, msg);
                 }
                 break;
             }
@@ -321,6 +321,9 @@ BlockServer::~BlockServer() {
 
 void BlockServer::ShutDown() {
     mxtl::AutoLock server_lock(&server_lock_);
+    // Explicitly close the fifo so the server, when done dispatching
+    // requests, will stop reading and return.
+    fifo_.reset();
 }
 
 // C declarations
@@ -336,8 +339,8 @@ void blockserver_shutdown(BlockServer* bs) {
 void blockserver_free(BlockServer* bs) {
     delete bs;
 }
-mx_status_t blockserver_serve(BlockServer* bs, mx_device_t* dev, block_ops_t* ops) {
-    return bs->Serve(dev, ops);
+mx_status_t blockserver_serve(BlockServer* bs, block_protocol_t* proto) {
+    return bs->Serve(proto);
 }
 mx_status_t blockserver_attach_vmo(BlockServer* bs, mx_handle_t raw_vmo, vmoid_t* out) {
     mx::vmo vmo(raw_vmo);
