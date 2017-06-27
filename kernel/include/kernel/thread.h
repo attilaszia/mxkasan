@@ -133,6 +133,9 @@ typedef struct thread {
     int retcode;
     struct wait_queue retcode_wait_queue;
 
+    /* mxkasan stuff */
+    unsigned int kasan_depth;
+
     char name[THREAD_NAME_LENGTH];
 #if WITH_DEBUG_LINEBUFFER
     /* buffering for debug/klog output */
