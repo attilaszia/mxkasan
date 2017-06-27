@@ -21,6 +21,8 @@
 // TODO: do this properly
 #define BITS_PER_LONG 64
 
+#define __alias(symbol)	__attribute__((alias(#symbol)))
+
 #define _RET_IP_		(unsigned long)__builtin_return_address(0)
 
 struct mxkasan_access_info {
@@ -39,6 +41,43 @@ void mxkasan_report(unsigned long addr, size_t size,
 
 void mxkasan_test(void);
 void mxkasan_unpoison_shadow(const void *address, size_t size);
+
+void __asan_loadN(unsigned long addr, size_t size);
+void __asan_load1(unsigned long addr);
+void __asan_load2(unsigned long addr);	
+void __asan_load4(unsigned long addr);	
+void __asan_load8(unsigned long addr);	
+void __asan_load16(unsigned long addr);	
+
+void __asan_storeN(unsigned long addr, size_t size);
+void __asan_store1(unsigned long addr);
+void __asan_store2(unsigned long addr);
+void __asan_store4(unsigned long addr);
+void __asan_store8(unsigned long addr);
+void __asan_store16(unsigned long addr);
+
+void __asan_handle_no_return(void);
+
+#define DEFINE_ASAN_REPORT_LOAD_DEC(size)                     \
+void __asan_report_load##size##_noabort(unsigned long addr); \
+
+#define DEFINE_ASAN_REPORT_STORE_DEC(size)                     \
+void __asan_report_store##size##_noabort(unsigned long addr); \
+
+DEFINE_ASAN_REPORT_LOAD_DEC(1);
+DEFINE_ASAN_REPORT_LOAD_DEC(2);
+DEFINE_ASAN_REPORT_LOAD_DEC(4);
+DEFINE_ASAN_REPORT_LOAD_DEC(8);
+DEFINE_ASAN_REPORT_LOAD_DEC(16);
+DEFINE_ASAN_REPORT_STORE_DEC(1);
+DEFINE_ASAN_REPORT_STORE_DEC(2);
+DEFINE_ASAN_REPORT_STORE_DEC(4);
+DEFINE_ASAN_REPORT_STORE_DEC(8);
+DEFINE_ASAN_REPORT_STORE_DEC(16);
+
+void __asan_report_load_n_noabort(unsigned long addr, size_t size);
+void __asan_report_store_n_noabort(unsigned long addr, size_t size);
+
 static void mxkasan_poison_shadow(const void *address, size_t size, u8 value);
 
 static inline uint8_t* mxkasan_mem_to_shadow(const uint8_t* addr)
@@ -57,12 +96,18 @@ static inline const void *mxkasan_shadow_to_mem(const void *shadow_addr)
 static inline void mxkasan_enable_current(void)
 {
 	thread_t* current = get_current_thread();
-	current->kasan_depth++;
+	current->mxkasan_depth++;
 }
 
 /* Disable reporting bugs for current task */
 static inline void mxkasan_disable_current(void)
 {
 	thread_t* current = get_current_thread();
-	current->kasan_depth--;
+	current->mxkasan_depth--;
+}
+
+static inline bool mxkasan_enabled(void)
+{
+	thread_t* current = get_current_thread();
+	return !current->mxkasan_depth;
 }

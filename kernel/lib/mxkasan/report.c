@@ -157,5 +157,55 @@ void mxkasan_report_user_access(struct mxkasan_access_info *info)
 		"=================================\n");
 
 	spin_unlock_irqrestore(&report_lock, state);
-    
+}
+
+
+
+void mxkasan_report(unsigned long addr, size_t size,
+		bool is_write, unsigned long ip)
+{
+	struct mxkasan_access_info info;
+
+	if (likely(!mxkasan_enabled()))
+		return;
+
+	info.access_addr = (void *)addr;
+	info.access_size = size;
+	info.is_write = is_write;
+	info.ip = ip;
+	mxkasan_report_error(&info);
+}
+
+
+#define DEFINE_ASAN_REPORT_LOAD(size)                     \
+void __asan_report_load##size##_noabort(unsigned long addr) \
+{                                                         \
+	mxkasan_report(addr, size, false, _RET_IP_);	  \
+}                                                         \
+
+#define DEFINE_ASAN_REPORT_STORE(size)                     \
+void __asan_report_store##size##_noabort(unsigned long addr) \
+{                                                          \
+	mxkasan_report(addr, size, true, _RET_IP_);	   \
+}                                                          \
+
+DEFINE_ASAN_REPORT_LOAD(1);
+DEFINE_ASAN_REPORT_LOAD(2);
+DEFINE_ASAN_REPORT_LOAD(4);
+DEFINE_ASAN_REPORT_LOAD(8);
+DEFINE_ASAN_REPORT_LOAD(16);
+DEFINE_ASAN_REPORT_STORE(1);
+DEFINE_ASAN_REPORT_STORE(2);
+DEFINE_ASAN_REPORT_STORE(4);
+DEFINE_ASAN_REPORT_STORE(8);
+DEFINE_ASAN_REPORT_STORE(16);
+
+void __asan_report_load_n_noabort(unsigned long addr, size_t size)
+{
+	mxkasan_report(addr, size, false, _RET_IP_);
+}
+
+void __asan_report_store_n_noabort(unsigned long addr, size_t size)
+{
+	mxkasan_report(addr, size, true, _RET_IP_);
 }

@@ -243,3 +243,45 @@ static inline void check_memory_region(unsigned long addr,
 
 	mxkasan_report(addr, size, write, _RET_IP_);
 }
+
+#define DEFINE_ASAN_LOAD_STORE(size)				\
+	void __asan_load##size(unsigned long addr)		\
+	{							\
+		check_memory_region(addr, size, false);		\
+	}							\
+		\
+	__alias(__asan_load##size)				\
+	void __asan_load##size##_noabort(unsigned long);	\
+	void __asan_store##size(unsigned long addr)		\
+	{							\
+		check_memory_region(addr, size, true);		\
+	}							\
+	__alias(__asan_store##size)				\
+	void __asan_store##size##_noabort(unsigned long);	\
+
+DEFINE_ASAN_LOAD_STORE(1);
+DEFINE_ASAN_LOAD_STORE(2);
+DEFINE_ASAN_LOAD_STORE(4);
+DEFINE_ASAN_LOAD_STORE(8);
+DEFINE_ASAN_LOAD_STORE(16);
+
+void __asan_loadN(unsigned long addr, size_t size)
+{
+	check_memory_region(addr, size, false);
+}
+
+__alias(__asan_loadN)
+void __asan_loadN_noabort(unsigned long, size_t);
+
+
+void __asan_storeN(unsigned long addr, size_t size)
+{
+	check_memory_region(addr, size, true);
+}
+
+__alias(__asan_storeN)
+void __asan_storeN_noabort(unsigned long, size_t);
+
+/* to shut up compiler complaints */
+void __asan_handle_no_return(void) {}
+
