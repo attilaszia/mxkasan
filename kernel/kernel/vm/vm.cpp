@@ -17,6 +17,7 @@
 #include <kernel/vm/pmm.h>
 #include <kernel/vm/vm_aspace.h>
 #include <lib/console.h>
+#include <lib/mxkasan.h>
 #include <lk/init.h>
 #include <string.h>
 #include <trace.h>
@@ -180,8 +181,8 @@ void vm_init_postheap(uint level) {
         },
         {
             .name = "mxkasan_shadow",
-            .base = (vaddr_t)0xffffde0000000000,
-            .size = ROUNDUP(0x100000000000, PAGE_SIZE),
+            .base = (vaddr_t)MXKASAN_SHADOW_OFFSET,
+            .size = ROUNDUP(MXKASAN_SHADOW_SIZE, PAGE_SIZE),
             .arch_mmu_flags = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
         }
     };

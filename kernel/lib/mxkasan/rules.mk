@@ -9,6 +9,7 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_SRCS += \
-	$(LOCAL_DIR)/mxkasan.c
+	$(LOCAL_DIR)/mxkasan.c \
+	$(LOCAL_DIR)/report.c \
 
 include make/module.mk

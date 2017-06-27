@@ -357,6 +357,9 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
 
     // allocate a zero length vm object to back it
     // TODO: decide if a null vmo object is worth it
+
+    // for mxkasan, we pass in the size so that pages 
+    // can be faulted in as things go
     mxtl::RefPtr<VmObject> vmo;
     if (strcmp(name, "mxkasan_shadow") == 0)
         vmo = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, size);
