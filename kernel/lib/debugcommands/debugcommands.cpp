@@ -343,9 +343,9 @@ static int cmd_crash(int argc, const cmd_args *argv, uint32_t flags)
 static int cmd_stackstomp(int argc, const cmd_args *argv, uint32_t flags)
 {
     for (size_t i = 0; i < DEFAULT_STACK_SIZE * 2; i++) {
-        uint8_t death[i];
-
-        memset(death, 0xaa, i);
+        //uint8_t death[i];
+        // remove memset for the time being to see if it causes the error
+        //memset(death, 0xaa, i);
         thread_sleep_relative(LK_USEC(1));
     }
 
