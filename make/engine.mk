@@ -137,8 +137,8 @@ endif
 
 # Kernel compile flags
 KERNEL_INCLUDES := $(BUILDDIR) kernel/include
-KERNEL_COMPILEFLAGS := -fno-pic -ffreestanding -include $(KERNEL_CONFIG_HEADER)
-KERNEL_COMPILEFLAGS += -Wformat=2
+KERNEL_COMPILEFLAGS := -fno-pic -ffreestanding -include $(KERNEL_CONFIG_HEADER) 
+KERNEL_COMPILEFLAGS += -Wformat=2 -fsanitize=kernel-address
 ifeq ($(call TOBOOL,$(USE_CLANG)),false)
 KERNEL_COMPILEFLAGS += -Wformat-signedness
 endif
@@ -373,6 +373,12 @@ include kernel/arch/$(ARCH)/rules.mk
 include kernel/top/rules.mk
 include make/sysgen.mk
 
+ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+#i dont think it does anything meaningful 
+GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-fuchsia
+#GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-none
+endif
+
 # recursively include any modules in the MODULE variable, leaving a trail of included
 # modules in the ALLMODULES list
 include make/recurse.mk
@@ -543,6 +549,9 @@ endif
 LD := $(TOOLCHAIN_PREFIX)ld
 ifeq ($(call TOBOOL,$(USE_LLD)),true)
 LD := $(CLANG_TOOLCHAIN_PREFIX)ld.lld
+# lets go with LD for now, because ld.lld has some missing dependencies
+# which i can't build apparently
+#LD := $(TOOLCHAIN_PREFIX)ld
 endif
 ifeq ($(call TOBOOL,$(USE_GOLD)),true)
 USER_LD := $(LD).gold
@@ -602,10 +611,12 @@ ifneq ($(HOST_USE_CLANG),)
 # dependency) rather than the host library. For host tools without
 # C++, ignore the unused arguments.
 HOST_CPPFLAGS += -stdlib=libc++
-HOST_LDFLAGS += -stdlib=libc++ -static-libstdc++
+HOST_LDFLAGS += -stdlib=libc++ -static-libstdc++ -lc++abi -lpthread
 # We don't need to link libc++abi.a on OS X.
 ifneq ($(HOST_PLATFORM),darwin)
-HOST_LDFLAGS += -Lprebuilt/downloads/clang+llvm-$(HOST_ARCH)-$(HOST_PLATFORM)/lib -Wl,-Bstatic -lc++abi -Wl,-Bdynamic -lpthread
+HOST_LDFLAGS += -Lprebuilt/downloads/clang+llvm-$(HOST_ARCH)-$(HOST_PLATFORM)/lib -Wl,-Bstatic -lc++abi -Wl,-Bstatic -lpthread
+
+#HOST_LDFLAGS +=  -Wl,-Bstatic -lc++abi -Wl,-Bdynamic -lpthread
 endif
 HOST_LDFLAGS += -Wno-unused-command-line-argument
 endif
