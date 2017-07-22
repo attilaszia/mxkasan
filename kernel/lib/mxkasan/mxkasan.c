@@ -259,19 +259,19 @@ static inline void check_memory_region(unsigned long addr,
 	__alias(__asan_store##size)				\
         void __asan_store##size##_noabort(unsigned long);       \
 
-//DEFINE_ASAN_LOAD_STORE(1);
-//DEFINE_ASAN_LOAD_STORE(2);
-//DEFINE_ASAN_LOAD_STORE(4);
-//DEFINE_ASAN_LOAD_STORE(8);
-//DEFINE_ASAN_LOAD_STORE(16);
+DEFINE_ASAN_LOAD_STORE(1);
+DEFINE_ASAN_LOAD_STORE(2);
+DEFINE_ASAN_LOAD_STORE(4);
+DEFINE_ASAN_LOAD_STORE(8);
+DEFINE_ASAN_LOAD_STORE(16);
 
 void __asan_loadN(unsigned long addr, size_t size)
 {
 	check_memory_region(addr, size, false);
 }
 
-//__alias(__asan_loadN)
-//void __asan_loadN_noabort(unsigned long, size_t);
+__alias(__asan_loadN)
+void __asan_loadN_noabort(unsigned long, size_t);
 
 
 void __asan_storeN(unsigned long addr, size_t size)
@@ -279,8 +279,8 @@ void __asan_storeN(unsigned long addr, size_t size)
 	check_memory_region(addr, size, true);
 }
 
-//__alias(__asan_storeN)
-//void __asan_storeN_noabort(unsigned long, size_t);
+__alias(__asan_storeN)
+void __asan_storeN_noabort(unsigned long, size_t);
 
 /* to shut up compiler complaints */
 void __asan_handle_no_return(void) {}
