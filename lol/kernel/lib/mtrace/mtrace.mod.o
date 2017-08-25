@@ -1,0 +1,1 @@
+INPUT(build-magenta-qemu-arm64-clang/kernel/lib/mtrace/kernel/lib/mtrace/mtrace.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/mtrace/kernel/lib/mtrace/mtrace-ipt.cpp.o)

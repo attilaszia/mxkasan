@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/block-client/libblock-client.a build-magenta-qemu-arm64-clang/system/ulib/block-client/system/ulib/block-client/client.c.o

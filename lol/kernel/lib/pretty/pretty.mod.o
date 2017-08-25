@@ -1,0 +1,1 @@
+INPUT(build-magenta-qemu-arm64-clang/kernel/lib/pretty/system/ulib/pretty/hexdump.c.o build-magenta-qemu-arm64-clang/kernel/lib/pretty/system/ulib/pretty/sizes.c.o)

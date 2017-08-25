@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/utest/core/threads/test-threads/libtest-threads.a build-magenta-qemu-arm64-clang/system/utest/core/threads/test-threads/system/utest/core/threads/test-threads/threads.c.o

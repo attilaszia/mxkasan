@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/svcfs/libsvcfs.a build-magenta-qemu-arm64-clang/system/ulib/svcfs/system/ulib/svcfs/svcfs.cpp.o

@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/mini-process/libmini-process.a build-magenta-qemu-arm64-clang/system/ulib/mini-process/system/ulib/mini-process/mini-process.c.o

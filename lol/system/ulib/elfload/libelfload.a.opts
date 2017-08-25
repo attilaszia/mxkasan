@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/elfload/libelfload.a build-magenta-qemu-arm64-clang/system/ulib/elfload/system/ulib/elfload/elf-load.c.o

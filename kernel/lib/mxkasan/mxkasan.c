@@ -12,35 +12,72 @@
 #include <inttypes.h>
 #include <lib/mxkasan.h>
 
+static bool mxkasan_initialized;
 
-void mxkasan_test(void) {
+void mxkasan_alloc_pages(const void *addr, size_t pages)
+{
+	if (unlikely(!mxkasan_initialized))
+		return;
+
+	if (likely(addr))
+		mxkasan_poison_shadow(addr, PAGE_SIZE * pages, MXKASAN_REDZONE);
+} 
+
+void mxkasan_free_pages(const void *addr, size_t pages)
+{
+	if (unlikely(!mxkasan_initialized))
+		return;
+
+	if (likely(addr))
+		mxkasan_poison_shadow(addr, PAGE_SIZE * pages , MXKASAN_FREE_PAGE);
+}
+
+
+void mxkasan_init(void) {
     uint8_t* testptr = (uint8_t*) 0xffffde0000000000 ;
 
     testptr += 0xdead;
     printf("writing MXKASAN shadow memory at %#" PRIxPTR "\n", (unsigned long)testptr);
     *testptr = 0xaa;
     printf("reading back value at %#" PRIxPTR ": %x\n", (unsigned long)testptr, *testptr);
+
+    mxkasan_initialized = true;
+
+    
+    testptr = malloc(128);
+    *(testptr+129) = 0xde;
+   
 }
 
 /*
  * Poisons the shadow memory for 'size' bytes starting from 'addr'.
  * Memory addresses should be aligned to KASAN_SHADOW_SCALE_SIZE.
  */
-static void mxkasan_poison_shadow(const void *address, size_t size, u8 value) {
-    void *shadow_start, *shadow_end;
+void mxkasan_poison_shadow(const void *address, size_t size, u8 value) {
+    if (unlikely(!mxkasan_initialized))
+		return;
 
+
+    void *shadow_start, *shadow_end;
+ 
     shadow_start = mxkasan_mem_to_shadow(address);
     shadow_end = mxkasan_mem_to_shadow(address + size);
+    printf("Original address:%#" PRIxPTR "\n", (unsigned long)address);
+    printf("Poisoning shadow memory at %#" PRIxPTR "\n", (unsigned long)shadow_start);
 
     memset(shadow_start, value, shadow_end - shadow_start);
 }
 
 void mxkasan_unpoison_shadow(const void *address, size_t size)
 {
+    if (unlikely(!mxkasan_initialized))
+		return;
+
 	mxkasan_poison_shadow(address, size, 0);
 
 	if (size & MXKASAN_SHADOW_MASK) {
 		u8 *shadow = (u8 *)mxkasan_mem_to_shadow(address + size);
+
 		*shadow = size & MXKASAN_SHADOW_MASK;
 	}
 }
@@ -55,7 +92,7 @@ void mxkasan_unpoison_shadow(const void *address, size_t size)
 static inline bool memory_is_poisoned_1(unsigned long addr)
 {
 	s8 shadow_value = *(s8 *)mxkasan_mem_to_shadow((void *)addr);
-
+    
 	if (unlikely(shadow_value)) {
 		s8 last_accessible_byte = addr & MXKASAN_SHADOW_MASK;
 		return unlikely(last_accessible_byte >= shadow_value);

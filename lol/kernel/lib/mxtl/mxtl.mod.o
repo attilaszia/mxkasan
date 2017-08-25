@@ -1,0 +1,1 @@
+INPUT(build-magenta-qemu-arm64-clang/kernel/lib/mxtl/kernel/lib/mxtl/arena.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/mxtl/kernel/lib/mxtl/arena_tests.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/mxtl/kernel/lib/mxtl/inline_array_tests.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/mxtl/kernel/lib/mxtl/name_tests.cpp.o)

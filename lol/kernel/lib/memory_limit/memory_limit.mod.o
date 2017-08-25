@@ -1,0 +1,1 @@
+INPUT(build-magenta-qemu-arm64-clang/kernel/lib/memory_limit/kernel/lib/memory_limit/memory_limit.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/memory_limit/kernel/lib/memory_limit/memory_limit_tests.cpp.o)

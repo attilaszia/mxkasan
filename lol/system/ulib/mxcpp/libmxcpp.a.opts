@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/mxcpp/libmxcpp.a build-magenta-qemu-arm64-clang/system/ulib/mxcpp/system/ulib/mxcpp/new.cpp.o build-magenta-qemu-arm64-clang/system/ulib/mxcpp/system/ulib/mxcpp/pure_virtual.cpp.o

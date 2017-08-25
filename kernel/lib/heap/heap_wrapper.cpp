@@ -20,6 +20,7 @@
 #include <kernel/vm/pmm.h>
 #include <lib/cmpctmalloc.h>
 #include <lib/console.h>
+#include <lib/mxkasan.h>
 
 #define LOCAL_TRACE 0
 
@@ -37,6 +38,7 @@ static bool heap_trace = false;
 #else
 #define heap_trace (false)
 #endif
+
 
 void heap_init(void)
 {
@@ -147,6 +149,7 @@ void *heap_page_alloc(size_t pages)
     struct list_node list = LIST_INITIAL_VALUE(list);
 
     void *result = pmm_alloc_kpages(pages, &list, NULL);
+    mxkasan_alloc_pages(result, pages);
 
     if (likely(result)) {
         // mark all of the allocated page as HEAP
@@ -163,7 +166,8 @@ void heap_page_free(void *ptr, size_t pages)
 {
     DEBUG_ASSERT(IS_PAGE_ALIGNED((uintptr_t)ptr));
     DEBUG_ASSERT(pages > 0);
-
+    
+    mxkasan_free_pages(ptr, pages);
     pmm_free_kpages(ptr, pages);
 }
 

@@ -50,6 +50,12 @@ static void print_error_description(struct mxkasan_access_info *info)
 	case 0 ... MXKASAN_SHADOW_SCALE_SIZE - 1:
 		bug_type = "out of bounds access";
 		break;
+	case MXKASAN_FREE_PAGE:
+ 		bug_type = "use after free";
+ 		break;
+ 	case MXKASAN_SHADOW_GAP:
+ 		bug_type = "wild memory access";
+ 		break;
 	}
 
 	printf("BUG: MXKASan: %s in %pS at addr %p\n",

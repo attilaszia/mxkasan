@@ -34,4 +34,8 @@ void heap_page_free(void *ptr, size_t pages);
  */
 void heap_get_info(size_t *size_bytes, size_t *free_bytes);
 
+/* This is sort of ugly, TODO cleanp */
+void mxkasan_alloc_pages(const void* addr, size_t pages);
+void mxkasan_free_pages(const void* addr, size_t pages);
+
 __END_CDECLS

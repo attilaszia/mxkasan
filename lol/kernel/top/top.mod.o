@@ -1,0 +1,1 @@
+INPUT(build-magenta-qemu-arm64-clang/kernel/top/kernel/top/init.c.o build-magenta-qemu-arm64-clang/kernel/top/kernel/top/main.c.o)

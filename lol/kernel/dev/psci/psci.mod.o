@@ -1,0 +1,1 @@
+INPUT(build-magenta-qemu-arm64-clang/kernel/dev/psci/kernel/dev/psci/psci.c.o build-magenta-qemu-arm64-clang/kernel/dev/psci/kernel/dev/psci/psci.S.o)

@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/c.crt/libc.crt.a build-magenta-qemu-arm64-clang/system/ulib/c.crt/third_party/ulib/musl/arch/aarch64/crt1.S.o

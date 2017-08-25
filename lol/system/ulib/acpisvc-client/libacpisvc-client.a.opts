@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/acpisvc-client/libacpisvc-client.a build-magenta-qemu-arm64-clang/system/ulib/acpisvc-client/system/ulib/acpisvc-client/simple.c.o

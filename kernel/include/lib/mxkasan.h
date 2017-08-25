@@ -18,6 +18,11 @@
 #define MXKASAN_SHADOW_SCALE_SIZE (1UL << MXKASAN_SHADOW_SCALE_SHIFT)
 #define MXKASAN_SHADOW_MASK       (MXKASAN_SHADOW_SCALE_SIZE - 1)
 
+#define MXKASAN_FREE_PAGE         0xFF  /* page was freed */
+#define MXKASAN_SHADOW_GAP        0xF9  /* address belongs to shadow memory */
+#define MXKASAN_REDZONE   	      0xFC  /* full page redzone */
+#define MXKASAN_MALLOC_FREE       0xFB  /* object was freed */
+
 // TODO: do this properly
 #define BITS_PER_LONG 64
 
@@ -39,8 +44,12 @@ void mxkasan_report_user_access(struct mxkasan_access_info *info);
 void mxkasan_report(unsigned long addr, size_t size,
 		bool is_write, unsigned long ip);
 
-void mxkasan_test(void);
+void mxkasan_init(void);
 void mxkasan_unpoison_shadow(const void *address, size_t size);
+void mxkasan_poison_shadow(const void *address, size_t size, u8 value);
+
+void mxkasan_alloc_pages(const void* addr, size_t pages);
+void mxkasan_free_pages(const void* addr, size_t pages);
 
 void __asan_loadN(unsigned long addr, size_t size);
 void __asan_load1(unsigned long addr);
@@ -78,18 +87,20 @@ DEFINE_ASAN_REPORT_STORE_DEC(16);
 void __asan_report_load_n_noabort(unsigned long addr, size_t size);
 void __asan_report_store_n_noabort(unsigned long addr, size_t size);
 
-static void mxkasan_poison_shadow(const void *address, size_t size, u8 value);
-
 static inline uint8_t* mxkasan_mem_to_shadow(const uint8_t* addr)
 {
-	return (uint8_t*)((unsigned long)addr >> MXKASAN_SHADOW_SCALE_SHIFT)
+	unsigned long address = (unsigned long)addr << 16;
+	address = (unsigned long)address >> 16;
+	return (uint8_t*)((unsigned long)address >> MXKASAN_SHADOW_SCALE_SHIFT)
 		+ MXKASAN_SHADOW_OFFSET;
 }
 
 static inline const void *mxkasan_shadow_to_mem(const void *shadow_addr)
 {
-	return (void *)(((unsigned long)shadow_addr - MXKASAN_SHADOW_OFFSET)
-		<< MXKASAN_SHADOW_SCALE_SHIFT);
+	unsigned long address = ((unsigned long)shadow_addr - MXKASAN_SHADOW_OFFSET)
+		<< MXKASAN_SHADOW_SCALE_SHIFT;
+	address = address + MXKASAN_SHADOW_START;
+	return (void*) address;
 }
 
 /* Enable reporting bugs after kasan_disable_current() */
@@ -111,3 +122,4 @@ static inline bool mxkasan_enabled(void)
 	thread_t* current = get_current_thread();
 	return !current->mxkasan_depth;
 }
+

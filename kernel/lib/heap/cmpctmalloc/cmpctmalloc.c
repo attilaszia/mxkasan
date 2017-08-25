@@ -19,6 +19,7 @@
 #include <lib/cmpctmalloc.h>
 #include <lib/heap.h>
 #include <platform.h>
+#include <lib/mxkasan.h>
 
 // Malloc implementation tuned for space.
 //
@@ -85,7 +86,7 @@ struct heap {
 // Heap static vars.
 static struct heap theheap;
 
-static ssize_t heap_grow(size_t len, free_t **bucket);
+static ssize_t heap_grow(size_t len, free_t **bucket, bool init);
 
 static void lock(void) TA_ACQ(theheap.lock)
 {
@@ -653,7 +654,7 @@ static void *large_alloc(size_t size)
     size = ROUNDUP(size, 8);
     free_t *free_area = NULL;
     lock();
-    if (heap_grow(size, &free_area) < 0) {
+    if (heap_grow(size, &free_area, false) < 0) {
         unlock();
         return NULL;
     }
@@ -764,7 +765,7 @@ void *cmpct_alloc(size_t size)
         size_t growby = MIN(1u << HEAP_ALLOC_VIRTUAL_BITS,
                             MAX(theheap.size >> 3,
                                 MAX(HEAP_GROW_SIZE, rounded_up)));
-        while (heap_grow(growby, NULL) < 0) {
+        while (heap_grow(growby, NULL, false) < 0) {
             if (growby <= rounded_up) {
                 unlock();
                 return NULL;
@@ -798,6 +799,9 @@ void *cmpct_alloc(size_t size)
     memset(((char *)result) + size, PADDING_FILL, rounded_up - size - sizeof(header_t));
 #endif
     unlock();
+
+    mxkasan_unpoison_shadow(result, size);
+
     return result;
 }
 
@@ -865,6 +869,9 @@ void cmpct_free(void *payload)
             free_memory(header, left, size);
         }
     }
+
+    mxkasan_poison_shadow(payload, size, MXKASAN_FREE_PAGE );
+
     unlock();
 }
 
@@ -895,7 +902,7 @@ static void add_to_heap(void *new_area, size_t size, free_t **bucket)
 
 // Create a new free-list entry of at least size bytes (including the
 // allocation header).  Called with the lock, apart from during init.
-static ssize_t heap_grow(size_t size, free_t **bucket)
+static ssize_t heap_grow(size_t size, free_t **bucket, bool init) TA_NO_THREAD_SAFETY_ANALYSIS
 {
     // The new free list entry will have a header on each side (the
     // sentinels) so we need to grow the gross heap size by this much more.
@@ -903,6 +910,7 @@ static ssize_t heap_grow(size_t size, free_t **bucket)
     size = ROUNDUP(size, PAGE_SIZE);
 
     void *ptr = heap_page_alloc(size >> PAGE_SIZE_SHIFT);
+
     if (ptr == NULL)
         return MX_ERR_NO_MEMORY;
 
@@ -933,5 +941,5 @@ void cmpct_init(void)
 
     theheap.remaining = 0;
 
-    heap_grow(initial_alloc, NULL);
+    heap_grow(initial_alloc, NULL, true);
 }

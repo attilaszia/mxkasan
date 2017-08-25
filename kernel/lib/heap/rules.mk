@@ -15,6 +15,8 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/heap_wrapper.cpp
 
 # use the cmpctmalloc heap implementation
-MODULE_DEPS := kernel/lib/heap/cmpctmalloc
+# and use mxkasan as well
+MODULE_DEPS := kernel/lib/heap/cmpctmalloc \
+               kernel/lib/mxkasan \
 
 include make/module.mk

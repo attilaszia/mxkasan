@@ -340,8 +340,12 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
     // TODO: remove once pmm returns zeroed pages
     ZeroPage(pa);
 
-    status_t status = AddPageLocked(p, offset);
-    DEBUG_ASSERT(status == MX_OK);
+    // TODO: clean this up, the point is that we don't do the administrative stuff
+    // for addresses in the shadow range
+    if (!(offset > 8000000)) {
+        status_t status = AddPageLocked(p, offset);
+        DEBUG_ASSERT(status == MX_OK);
+    }
 
     // other mappings may have covered this offset into the vmo, so unmap those ranges
     RangeChangeUpdateLocked(offset, PAGE_SIZE);

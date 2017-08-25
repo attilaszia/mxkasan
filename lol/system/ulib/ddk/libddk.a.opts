@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/system/ulib/ddk/libddk.a build-magenta-qemu-arm64-clang/system/ulib/ddk/system/ulib/ddk/common/usb.c.o build-magenta-qemu-arm64-clang/system/ulib/ddk/system/ulib/ddk/protocol/platform-device.c.o build-magenta-qemu-arm64-clang/system/ulib/ddk/system/ulib/ddk/io-buffer.c.o build-magenta-qemu-arm64-clang/system/ulib/ddk/system/ulib/ddk/iotxn.c.o

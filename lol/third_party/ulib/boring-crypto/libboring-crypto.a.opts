@@ -1,0 +1,1 @@
+cr build-magenta-qemu-arm64-clang/third_party/ulib/boring-crypto/libboring-crypto.a build-magenta-qemu-arm64-clang/third_party/ulib/boring-crypto/third_party/ulib/boring-crypto/chacha.c.o
