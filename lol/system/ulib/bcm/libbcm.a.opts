@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/bcm/libbcm.a build-magenta-qemu-arm64-clang/system/ulib/bcm/system/ulib/bcm/dma.c.o

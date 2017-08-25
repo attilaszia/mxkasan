@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/hid/libhid.a build-magenta-qemu-arm64-clang/system/ulib/hid/system/ulib/hid/acer12.c.o build-magenta-qemu-arm64-clang/system/ulib/hid/system/ulib/hid/hid.c.o build-magenta-qemu-arm64-clang/system/ulib/hid/system/ulib/hid/keymaps.c.o build-magenta-qemu-arm64-clang/system/ulib/hid/system/ulib/hid/samsung.c.o

@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/mdi/libmdi.a build-magenta-qemu-arm64-clang/system/ulib/mdi/system/ulib/mdi/mdi.c.o

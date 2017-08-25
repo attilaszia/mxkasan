@@ -1,5 +1,0 @@
-FUNCTION(_Z14check_dso_ctorv, 0x0)
-WEAK_FUNCTION(_ZN6GlobalD2Ev, 0x0)
-UNDEFINED(__cxa_atexit, 0x0)
-UNDEFINED(sched_yield, 0x0)
-UNDEFINED(unittest_printf_critical, 0x0)

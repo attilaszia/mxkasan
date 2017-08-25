@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/bitmap/libbitmap.a build-magenta-qemu-arm64-clang/system/ulib/bitmap/system/ulib/bitmap/raw-bitmap.cpp.o build-magenta-qemu-arm64-clang/system/ulib/bitmap/system/ulib/bitmap/rle-bitmap.cpp.o

@@ -1,1 +1,0 @@
-INPUT(build-magenta-qemu-arm64-clang/kernel/lib/vdso/kernel/lib/vdso/rodso.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/vdso/kernel/lib/vdso/vdso.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/vdso/kernel/lib/vdso/vdso-image.S.o)

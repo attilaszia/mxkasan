@@ -1,1 +1,0 @@
-INPUT(build-magenta-qemu-arm64-clang/kernel/dev/interrupt/arm_gicv2/kernel/dev/interrupt/arm_gicv2/arm_gic.c.o build-magenta-qemu-arm64-clang/kernel/dev/interrupt/arm_gicv2/kernel/dev/interrupt/arm_gicv2/arm_gicv2m.c.o build-magenta-qemu-arm64-clang/kernel/dev/interrupt/arm_gicv2/kernel/dev/interrupt/arm_gicv2/arm_gicv2m_msi.c.o)

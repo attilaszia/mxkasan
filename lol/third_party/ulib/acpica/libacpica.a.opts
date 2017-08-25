@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/third_party/ulib/acpica/libacpica.a build-magenta-qemu-arm64-clang/third_party/ulib/acpica/third_party/ulib/acpica/empty.c.o

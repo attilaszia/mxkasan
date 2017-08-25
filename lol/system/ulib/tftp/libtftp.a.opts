@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/tftp/libtftp.a build-magenta-qemu-arm64-clang/system/ulib/tftp/system/ulib/tftp/tftp.c.o

@@ -1,1 +1,0 @@
-INPUT(build-magenta-qemu-arm64-clang/kernel/lib/userboot/kernel/lib/userboot/userboot.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/userboot/kernel/lib/userboot/userboot-image.S.o)

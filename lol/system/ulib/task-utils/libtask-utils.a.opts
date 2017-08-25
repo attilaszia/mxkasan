@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/task-utils/libtask-utils.a build-magenta-qemu-arm64-clang/system/ulib/task-utils/system/ulib/task-utils/get.c.o build-magenta-qemu-arm64-clang/system/ulib/task-utils/system/ulib/task-utils/walker.cpp.o

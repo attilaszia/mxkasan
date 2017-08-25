@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/driver-info/libdriver-info.a build-magenta-qemu-arm64-clang/system/ulib/driver-info/system/ulib/driver-info/driver-info.c.o

@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/digest/libdigest.a build-magenta-qemu-arm64-clang/system/ulib/digest/system/ulib/digest/digest.cpp.o build-magenta-qemu-arm64-clang/system/ulib/digest/system/ulib/digest/merkle-tree.cpp.o

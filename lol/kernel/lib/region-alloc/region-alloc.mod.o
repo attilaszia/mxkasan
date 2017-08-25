@@ -1,1 +1,0 @@
-INPUT(build-magenta-qemu-arm64-clang/kernel/lib/region-alloc/system/ulib/region-alloc/region-alloc-c-api.cpp.o build-magenta-qemu-arm64-clang/kernel/lib/region-alloc/system/ulib/region-alloc/region-alloc.cpp.o)

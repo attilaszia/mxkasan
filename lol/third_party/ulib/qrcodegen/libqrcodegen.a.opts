@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/third_party/ulib/qrcodegen/libqrcodegen.a build-magenta-qemu-arm64-clang/third_party/ulib/qrcodegen/third_party/ulib/qrcodegen/qrcode.cpp.o

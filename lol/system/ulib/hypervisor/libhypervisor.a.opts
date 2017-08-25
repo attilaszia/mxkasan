@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/hypervisor/libhypervisor.a build-magenta-qemu-arm64-clang/system/ulib/hypervisor/system/ulib/hypervisor/acpi.c.o build-magenta-qemu-arm64-clang/system/ulib/hypervisor/system/ulib/hypervisor/guest.c.o

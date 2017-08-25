@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/third_party/ulib/cryptolib/libcryptolib.a build-magenta-qemu-arm64-clang/third_party/ulib/cryptolib/third_party/ulib/cryptolib/cryptolib.c.o

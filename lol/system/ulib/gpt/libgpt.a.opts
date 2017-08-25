@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/gpt/libgpt.a build-magenta-qemu-arm64-clang/system/ulib/gpt/system/ulib/gpt/gpt.c.o

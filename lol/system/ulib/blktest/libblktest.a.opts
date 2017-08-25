@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/blktest/libblktest.a build-magenta-qemu-arm64-clang/system/ulib/blktest/system/ulib/blktest/blktest.cpp.o

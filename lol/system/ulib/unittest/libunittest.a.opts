@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/unittest/libunittest.a build-magenta-qemu-arm64-clang/system/ulib/unittest/system/ulib/unittest/all-tests.c.o build-magenta-qemu-arm64-clang/system/ulib/unittest/system/ulib/unittest/unittest.c.o

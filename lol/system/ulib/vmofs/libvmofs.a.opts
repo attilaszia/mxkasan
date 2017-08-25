@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/vmofs/libvmofs.a build-magenta-qemu-arm64-clang/system/ulib/vmofs/system/ulib/vmofs/vmofs.cpp.o

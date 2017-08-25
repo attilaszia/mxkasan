@@ -1,1 +1,0 @@
-INPUT(build-magenta-qemu-arm64-clang/kernel/platform/kernel/platform/debug.c.o build-magenta-qemu-arm64-clang/kernel/platform/kernel/platform/init.c.o build-magenta-qemu-arm64-clang/kernel/platform/kernel/platform/power.c.o)

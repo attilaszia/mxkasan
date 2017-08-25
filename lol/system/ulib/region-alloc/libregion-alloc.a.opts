@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/region-alloc/libregion-alloc.a build-magenta-qemu-arm64-clang/system/ulib/region-alloc/system/ulib/region-alloc/region-alloc.cpp.o build-magenta-qemu-arm64-clang/system/ulib/region-alloc/system/ulib/region-alloc/region-alloc-c-api.cpp.o

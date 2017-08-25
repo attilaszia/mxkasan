@@ -1,1 +1,0 @@
-cr build-magenta-qemu-arm64-clang/system/ulib/inet6/libinet6.a build-magenta-qemu-arm64-clang/system/ulib/inet6/system/ulib/inet6/inet6.c.o build-magenta-qemu-arm64-clang/system/ulib/inet6/system/ulib/inet6/netifc.c.o build-magenta-qemu-arm64-clang/system/ulib/inet6/system/ulib/inet6/eth-client.c.o
