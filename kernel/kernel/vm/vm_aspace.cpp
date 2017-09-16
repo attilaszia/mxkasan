@@ -533,7 +533,7 @@ status_t VmAspace::PageFault(vaddr_t va, uint flags) {
     // for now, hold the aspace lock across the page fault operation,
     // which stops any other operations on the address space from moving
     // the region out from underneath it
-    AutoLock a(&lock_);
+    AutoLock a(&lock_); 
 
     return root_vmar_->PageFault(va, flags);
 }

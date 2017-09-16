@@ -19,6 +19,7 @@
 #include <mxtl/auto_lock.h>
 #include <safeint/safe_math.h>
 #include <trace.h>
+#include <lib/mxkasan.h>
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 //#define LOCAL_TRACE 1 
@@ -515,6 +516,9 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
     DEBUG_ASSERT(va >= base_ && va <= base_ + size_ - 1);
 
     va = ROUNDDOWN(va, PAGE_SIZE);
+
+    bool is_shadow = is_shadow_addr(va); 
+
     uint64_t vmo_offset = va - base_ + object_offset_;
 
     __UNUSED char pf_string[5];
@@ -553,7 +557,15 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
     // fault in or grab an existing page
     paddr_t new_pa;
     vm_page_t* page;
-    status_t status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
+    status_t status;
+
+    if (is_shadow) {
+        status = object_->GetShadowPageLocked(vmo_offset, pf_flags, &page, &new_pa);
+    }
+    else {
+        status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
+    }
+
     if (status < 0) {
         TRACEF("ERROR: failed to fault in or grab existing page\n");
         TRACEF("%p vmo_offset %#" PRIx64 ", pf_flags %#x\n", this, vmo_offset, pf_flags);

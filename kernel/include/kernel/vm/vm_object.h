@@ -160,6 +160,11 @@ public:
         return MX_ERR_NOT_SUPPORTED;
     }
 
+    // Same thing for shadow
+    virtual status_t GetShadowPageLocked(uint64_t offset, uint pf_flags, vm_page_t**, paddr_t*) TA_REQ(lock_) {
+        return MX_ERR_NOT_SUPPORTED;
+    }
+
     Mutex* lock() TA_RET_CAP(lock_) { return &lock_; }
     Mutex& lock_ref() TA_RET_CAP(lock_) { return lock_; }
 

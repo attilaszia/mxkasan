@@ -328,6 +328,9 @@ CMDLINE+="kernel.entropy=$(head -c 32 /dev/urandom | shasum -a 256 | awk '{ prin
 # Don't 'reboot' the emulator if the kernel crashes
 CMDLINE+="kernel.halt_on_panic=true "
 
+#Disable or enable ktrace - used for testing locking issue 
+#CMDLINE+="ktrace.bufsize=0"
+
 # run qemu
 set -x
 exec $QEMU $ARGS -append "$CMDLINE" "$@"

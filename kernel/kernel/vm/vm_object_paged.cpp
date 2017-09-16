@@ -235,6 +235,128 @@ mxtl::RefPtr<VmObject> VmObjectPaged::CreateFromROData(const void* data, size_t 
     return vmo;
 }
 
+status_t VmObjectPaged::GetShadowPageLocked(uint64_t offset, uint pf_flags, vm_page_t** const page_out, paddr_t* const pa_out) {
+    canary_.Assert();
+    DEBUG_ASSERT(lock_.IsHeld());
+
+    if (offset >= size_)
+        return MX_ERR_OUT_OF_RANGE;
+
+    vm_page_t* p;
+    paddr_t pa;
+
+    // see if we already have a page at that offset
+    p = page_list_.GetPage(offset);
+    if (p) {
+        if (page_out)
+            *page_out = p;
+        if (pa_out)
+            *pa_out = vm_page_to_paddr(p);
+        return MX_OK;
+    }
+
+    __UNUSED char pf_string[5];
+    LTRACEF("vmo %p, offset %#" PRIx64 ", pf_flags %#x (%s)\n", this, offset, pf_flags,
+            vmm_pf_flags_to_string(pf_flags, pf_string));
+
+    // if we have a parent see if they have a page for us
+    if (parent_) {
+        safeint::CheckedNumeric<uint64_t> parent_offset = parent_offset_;
+        parent_offset += offset;
+        DEBUG_ASSERT(parent_offset.IsValid());
+
+        // make sure we don't cause the parent to fault in new pages, just ask for any that already exist
+        uint parent_pf_flags = pf_flags & ~(VMM_PF_FLAG_FAULT_MASK);
+
+        status_t status = parent_->GetPageLocked(parent_offset.ValueOrDie(), parent_pf_flags, &p, &pa);
+        if (status == MX_OK) {
+            // we have a page from them. if we're read-only faulting, return that page so they can map
+            // or read from it directly
+            if ((pf_flags & VMM_PF_FLAG_WRITE) == 0) {
+                if (page_out)
+                    *page_out = p;
+                if (pa_out)
+                    *pa_out = pa;
+
+                LTRACEF("read only faulting in page %p, pa %#" PRIxPTR " from parent\n", p, pa);
+
+                return MX_OK;
+            }
+
+            // if we're write faulting, we need to clone it and return the new page
+            paddr_t pa_clone;
+            vm_page_t* p_clone = pmm_alloc_page(pmm_alloc_flags_, &pa_clone);
+            if (!p_clone)
+                return MX_ERR_NO_MEMORY;
+
+            p_clone->state = VM_PAGE_STATE_OBJECT;
+
+            // do a direct copy of the two pages
+            const void* src = paddr_to_kvaddr(pa);
+            void* dst = paddr_to_kvaddr(pa_clone);
+
+            DEBUG_ASSERT(src && dst);
+
+            memcpy(dst, src, PAGE_SIZE);
+
+            // add the new page and return it
+            status = AddPageLocked(p_clone, offset);
+            DEBUG_ASSERT(status == MX_OK);
+
+            LTRACEF("copy-on-write faulted in page %p, pa %#" PRIxPTR " copied from %p, pa %#" PRIxPTR "\n",
+                    p, pa, p_clone, pa_clone);
+
+            if (page_out)
+                *page_out = p_clone;
+            if (pa_out)
+                *pa_out = pa_clone;
+
+            return MX_OK;
+        }
+    }
+
+    // if we're not being asked to sw or hw fault in the page, return not found
+    if ((pf_flags & VMM_PF_FLAG_FAULT_MASK) == 0)
+        return MX_ERR_NOT_FOUND;
+
+    // if we're read faulting, we don't already have a page, and the parent doesn't have it,
+    // return the single global zero page
+    if ((pf_flags & VMM_PF_FLAG_WRITE) == 0) {
+        LTRACEF("returning the zero page\n");
+        if (page_out)
+            *page_out = vm_get_zero_page();
+        if (pa_out)
+            *pa_out = vm_get_zero_page_paddr();
+        return MX_OK;
+    }
+
+    // allocate a page
+    p = pmm_alloc_page(pmm_alloc_flags_, &pa);
+    if (!p)
+        return MX_ERR_NO_MEMORY;
+
+    p->state = VM_PAGE_STATE_OBJECT;
+
+    // TODO: remove once pmm returns zeroed pages
+    ZeroPage(pa);
+
+    // We don't add the page for shadow ranges
+    // status_t status = AddPageLocked(p, offset);
+    // DEBUG_ASSERT(status == MX_OK);
+
+    // other mappings may have covered this offset into the vmo, so unmap those ranges
+    RangeChangeUpdateLocked(offset, PAGE_SIZE);
+
+    LTRACEF("faulted in page %p, pa %#" PRIxPTR "\n", p, pa);
+
+    if (page_out)
+        *page_out = p;
+    if (pa_out)
+        *pa_out = pa;
+
+    return MX_OK;
+}
+
 status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t** const page_out, paddr_t* const pa_out) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
@@ -342,10 +464,8 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
 
     // TODO: clean this up, the point is that we don't do the administrative stuff
     // for addresses in the shadow range
-    if (!(offset > 8000000)) {
-        status_t status = AddPageLocked(p, offset);
-        DEBUG_ASSERT(status == MX_OK);
-    }
+    status_t status = AddPageLocked(p, offset);
+    DEBUG_ASSERT(status == MX_OK);
 
     // other mappings may have covered this offset into the vmo, so unmap those ranges
     RangeChangeUpdateLocked(offset, PAGE_SIZE);

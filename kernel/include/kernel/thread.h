@@ -200,7 +200,7 @@ void thread_reschedule(void); /* revaluate the run queue on the current cpu,
 
 void thread_owner_name(thread_t *t, char out_name[THREAD_NAME_LENGTH]);
 
-#define THREAD_BACKTRACE_DEPTH 10
+#define THREAD_BACKTRACE_DEPTH 30
 typedef struct thread_backtrace {
     void* pc[THREAD_BACKTRACE_DEPTH];
 } thread_backtrace_t;

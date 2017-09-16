@@ -87,6 +87,15 @@ DEFINE_ASAN_REPORT_STORE_DEC(16);
 void __asan_report_load_n_noabort(unsigned long addr, size_t size);
 void __asan_report_store_n_noabort(unsigned long addr, size_t size);
 
+inline bool is_shadow_addr(vaddr_t va) {
+	if ((MXKASAN_SHADOW_OFFSET <= va) && 
+	   (va <= (MXKASAN_SHADOW_OFFSET +MXKASAN_SHADOW_SIZE))) {
+	       return true;
+	   }
+	else 
+	   return false;
+}
+
 static inline uint8_t* mxkasan_mem_to_shadow(const uint8_t* addr)
 {
 	unsigned long address = (unsigned long)addr << 16;

@@ -43,10 +43,8 @@ void mxkasan_init(void) {
 
     mxkasan_initialized = true;
 
-    
     testptr = malloc(128);
-    *(testptr+129) = 0xde;
-   
+    *(testptr+129) = 0xde;   
 }
 
 /*
