@@ -225,6 +225,16 @@ status_t VmAddressRegion::CreateSubVmar(size_t offset, size_t size, uint8_t alig
     return MX_OK;
 }
 
+mxtl::RefPtr<VmMapping> VmAddressRegion::GetShadowVmMapping() {
+    return shadow_vmm_;
+}
+
+status_t VmAddressRegion::SetShadowVmMapping(mxtl::RefPtr<VmMapping> shadow_vmm) {
+    LTRACEF("Setting the shadow VM mapping\n");
+    shadow_vmm_ = shadow_vmm;
+    return MX_OK;
+}
+
 status_t VmAddressRegion::CreateVmMapping(size_t mapping_offset, size_t size, uint8_t align_pow2,
                                           uint32_t vmar_flags, mxtl::RefPtr<VmObject> vmo,
                                           uint64_t vmo_offset, uint arch_mmu_flags, const char* name,

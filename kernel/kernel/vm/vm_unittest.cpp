@@ -377,7 +377,7 @@ static bool vmo_precommitted_map_test(void* context) {
     auto ka = VmAspace::kernel_aspace();
     void* ptr;
     auto ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
-                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
+                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
     EXPECT_EQ(MX_OK, ret, "mapping object");
 
     // fill with known pattern and test
@@ -399,7 +399,7 @@ static bool vmo_demand_paged_map_test(void* context) {
     auto ka = VmAspace::kernel_aspace();
     void* ptr;
     auto ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
-                             0, 0, kArchRwFlags);
+                             0, 0, kArchRwFlags, false);
     EXPECT_EQ(ret, MX_OK, "mapping object");
 
     // fill with known pattern and test
@@ -421,7 +421,7 @@ static bool vmo_dropped_ref_test(void* context) {
     auto ka = VmAspace::kernel_aspace();
     void* ptr;
     auto ret = ka->MapObjectInternal(mxtl::move(vmo), "test", 0, alloc_size, &ptr,
-                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
+                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
     EXPECT_EQ(ret, MX_OK, "mapping object");
 
     EXPECT_NULL(vmo, "dropped ref to object");
@@ -446,7 +446,7 @@ static bool vmo_remap_test(void* context) {
     auto ka = VmAspace::kernel_aspace();
     void* ptr;
     auto ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
-                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
+                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
     EXPECT_EQ(MX_OK, ret, "mapping object");
 
     // fill with known pattern and test
@@ -458,7 +458,7 @@ static bool vmo_remap_test(void* context) {
 
     // map it again
     ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
-                        0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
+                        0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
     EXPECT_EQ(ret, MX_OK, "mapping object");
 
     // test that the pattern is still valid
@@ -481,7 +481,7 @@ static bool vmo_double_remap_test(void* context) {
     auto ka = VmAspace::kernel_aspace();
     void* ptr;
     auto ret = ka->MapObjectInternal(vmo, "test0", 0, alloc_size, &ptr,
-                             0, 0, kArchRwFlags);
+                             0, 0, kArchRwFlags, false);
     EXPECT_EQ(MX_OK, ret, "mapping object");
 
     // fill with known pattern and test
@@ -491,7 +491,7 @@ static bool vmo_double_remap_test(void* context) {
     // map it again
     void* ptr2;
     ret = ka->MapObjectInternal(vmo, "test1", 0, alloc_size, &ptr2,
-                        0, 0, kArchRwFlags);
+                        0, 0, kArchRwFlags, false);
     EXPECT_EQ(ret, MX_OK, "mapping object second time");
     EXPECT_NEQ(ptr, ptr2, "second mapping is different");
 
@@ -503,7 +503,7 @@ static bool vmo_double_remap_test(void* context) {
     void* ptr3;
     static const size_t alloc_offset = PAGE_SIZE;
     ret = ka->MapObjectInternal(vmo, "test2", alloc_offset, alloc_size - alloc_offset,
-                        &ptr3, 0, 0, kArchRwFlags);
+                        &ptr3, 0, 0, kArchRwFlags, false);
     EXPECT_EQ(ret, MX_OK, "mapping object third time");
     EXPECT_NEQ(ptr3, ptr2, "third mapping is different");
     EXPECT_NEQ(ptr3, ptr, "third mapping is different");
@@ -575,7 +575,7 @@ static bool vmo_read_write_smoke_test(void* context) {
     auto ka = VmAspace::kernel_aspace();
     uint8_t* ptr;
     err = ka->MapObjectInternal(vmo, "test", 0, alloc_size, (void**)&ptr,
-                        0, 0, kArchRwFlags);
+                        0, 0, kArchRwFlags, false);
     EXPECT_EQ(MX_OK, err, "mapping object");
 
     // write to it at odd offsets
@@ -671,13 +671,13 @@ bool vmo_cache_test(void* context) {
         auto vmo = VmObjectPhysical::Create(pa, PAGE_SIZE);
         EXPECT_TRUE(vmo, "");
         EXPECT_EQ(MX_OK, ka->MapObjectInternal(vmo, "test", 0, PAGE_SIZE, (void**)&ptr, 0, 0,
-                  kArchRwFlags), "map vmo");
+                  kArchRwFlags, false), "map vmo");
         EXPECT_EQ(MX_ERR_BAD_STATE, vmo->SetMappingCachePolicy(cache_policy),
                   "set flags while mapped");
         EXPECT_EQ(MX_OK, ka->FreeRegion((vaddr_t)ptr), "unmap vmo");
         EXPECT_EQ(MX_OK, vmo->SetMappingCachePolicy(cache_policy), "set flags after unmapping");
         EXPECT_EQ(MX_OK, ka->MapObjectInternal(vmo, "test", 0, PAGE_SIZE, (void**)&ptr, 0, 0,
-                  kArchRwFlags), "map vmo again");
+                  kArchRwFlags, false), "map vmo again");
         EXPECT_EQ(MX_OK, ka->FreeRegion((vaddr_t)ptr), "unmap vmo");
     }
 

@@ -9,7 +9,10 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_SRCS += \
-	$(LOCAL_DIR)/mxkasan.c \
-	$(LOCAL_DIR)/report.c \
+	$(LOCAL_DIR)/mxkasan.cpp \
+	$(LOCAL_DIR)/report.cpp \
+
+MODULE_DEPS := \
+    kernel/lib/mxtl \
 
 include make/module.mk

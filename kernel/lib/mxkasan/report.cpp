@@ -23,10 +23,10 @@ static spin_lock_t report_lock;
 #define round_up(x, y) ((((x)-1) | __round_mask(x, y))+1)
 #define round_down(x, y) ((x) & ~__round_mask(x, y))
 
-static const void *find_first_bad_addr(const void *addr, size_t size)
+static const uint8_t *find_first_bad_addr(const uint8_t *addr, size_t size)
 {
 	u8 shadow_val = *(u8 *)mxkasan_mem_to_shadow(addr);
-	const void *first_bad_addr = addr;
+	const uint8_t *first_bad_addr = addr;
 
 	while (!shadow_val && first_bad_addr < addr + size) {
 		first_bad_addr += MXKASAN_SHADOW_SCALE_SIZE;
@@ -78,12 +78,12 @@ static void print_address_description(struct mxkasan_access_info *info)
 	dump_stack();
 }
 
-static bool row_is_guilty(const void *row, const void *guilty)
+static bool row_is_guilty(const uint8_t *row, const uint8_t *guilty)
 {
 	return (row <= guilty) && (guilty < row + SHADOW_BYTES_PER_ROW);
 }
 
-static int shadow_pointer_offset(const void *row, const void *shadow)
+static long shadow_pointer_offset(const uint8_t *row, const uint8_t *shadow)
 {
 	/* The length of ">ff00ff00ff00ff00: " is
 	 *    3 + (BITS_PER_LONG/8)*2 chars.
@@ -92,13 +92,13 @@ static int shadow_pointer_offset(const void *row, const void *shadow)
 		(shadow - row) / SHADOW_BYTES_PER_BLOCK + 1;
 }
 
-static void print_shadow_for_address(const void *addr)
+static void print_shadow_for_address(const uint8_t *addr)
 {
 	int i;
-	const void *shadow = mxkasan_mem_to_shadow(addr);
-	const void *shadow_row;
+	const uint8_t *shadow = mxkasan_mem_to_shadow(addr);
+	const uint8_t *shadow_row;
 
-	shadow_row = (void *)round_down((unsigned long)shadow,
+	shadow_row = (uint8_t *)round_down((unsigned long)shadow,
 					SHADOW_BYTES_PER_ROW)
 		- SHADOW_ROWS_AROUND_ADDR * SHADOW_BYTES_PER_ROW;
 
@@ -119,7 +119,7 @@ static void print_shadow_for_address(const void *addr)
 		mxkasan_enable_current();
 
 		if (row_is_guilty(shadow_row, shadow))
-			printf("%*c\n",
+			printf("%*c\n",(int)
 				shadow_pointer_offset(shadow_row, shadow),
 				'^');
 
@@ -175,7 +175,7 @@ void mxkasan_report(unsigned long addr, size_t size,
 	if (likely(!mxkasan_enabled()))
 		return;
 
-	info.access_addr = (void *)addr;
+	info.access_addr = (uint8_t *)addr;
 	info.access_size = size;
 	info.is_write = is_write;
 	info.ip = ip;

@@ -215,6 +215,10 @@ public:
                                      uint arch_mmu_flags, const char* name,
                                      mxtl::RefPtr<VmMapping>* out);
 
+    virtual status_t SetShadowVmMapping(mxtl::RefPtr<VmMapping> shadow_vmm);
+
+    mxtl::RefPtr<VmMapping> GetShadowVmMapping();
+
     // Find the child region that contains the given addr.  If addr is in a gap,
     // returns nullptr.  This is a non-recursive search.
     virtual mxtl::RefPtr<VmAddressRegionOrMapping> FindRegion(vaddr_t addr);
@@ -328,6 +332,8 @@ private:
     // list of subregions, indexed by base address
     ChildList subregions_;
 
+    mxtl::RefPtr<VmMapping> shadow_vmm_;
+
     const char name_[32] = {};
 };
 
@@ -416,6 +422,9 @@ public:
     // Map in pages from the underlying vm object, optionally committing pages as it goes
     status_t MapRange(size_t offset, size_t len, bool commit);
 
+    // Same thing without the aspace lock. (for mxkasan)
+    status_t MapRangeLocked(size_t offset, size_t len, bool commit);
+
     // Unmap a subset of the region of memory in the containing address space,
     // returning it to the parent region to allocate.  If all of the memory is unmapped,
     // Destroy()s this mapping.  If a subrange of the mapping is specified, the
@@ -485,4 +494,6 @@ private:
 
     // used to detect recursions through the vmo fault path
     bool currently_faulting_ = false;
+
+    bool currently_mapping_ = false;
 };

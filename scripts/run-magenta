@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+!/usr/bin/env bash
 
 # Copyright 2016 The Fuchsia Authors
 #
@@ -165,7 +165,7 @@ fi
 if (( !$GRAPHICS  )); then
     ARGS+=" -nographic"
 else
-    ARGS+=" -serial stdio"
+    ARGS+=" -serial mon:stdio"
     if [[ "$ARCH" == "x86-64" && $VIRTIO == 0 ]]; then
         # Enable Bochs VBE device, which Magenta has a device for
         ARGS+=" -vga std"

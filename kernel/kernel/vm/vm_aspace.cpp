@@ -33,6 +33,8 @@
 #include <lib/vdso.h>
 #endif
 
+
+//#define LOCAL_TRACE 1
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 
 // pointer to a singleton kernel address space
@@ -226,6 +228,12 @@ mxtl::RefPtr<VmAddressRegion> VmAspace::RootVmar() {
     return mxtl::move(ref);
 }
 
+mxtl::RefPtr<VmAddressRegion> VmAspace::RootVmarLocked() {
+    mxtl::RefPtr<VmAddressRegion> ref(root_vmar_);
+    return mxtl::move(ref);
+}
+
+
 status_t VmAspace::Destroy() {
     canary_.Assert();
     LTRACEF("%p '%s'\n", this, name_);
@@ -271,7 +279,7 @@ __WEAK vaddr_t arch_mmu_pick_spot(const arch_aspace_t* aspace,
 
 status_t VmAspace::MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* name, uint64_t offset,
                                      size_t size, void** ptr, uint8_t align_pow2, uint vmm_flags,
-                                     uint arch_mmu_flags) {
+                                     uint arch_mmu_flags, bool shadow) {
 
     canary_.Assert();
     LTRACEF("aspace %p name '%s' vmo %p, offset %#" PRIx64 " size %#zx "
@@ -319,9 +327,18 @@ status_t VmAspace::MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* nam
     status_t status = RootVmar()->CreateVmMapping(vmar_offset, size, align_pow2,
                                                   vmar_flags,
                                                   vmo, offset, arch_mmu_flags, name, &r);
+
     if (status != MX_OK) {
         return status;
     }
+    // this is the shadow vm mapping
+    if (shadow) {
+        status_t status = RootVmar()->SetShadowVmMapping(r);
+
+        if (status != MX_OK) {
+             return status;
+        }
+    }    
 
     // if we're committing it, map the region now
     if (vmm_flags & VMM_FLAG_COMMIT) {
@@ -344,6 +361,11 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
     DEBUG_ASSERT(IS_PAGE_ALIGNED(vaddr));
     DEBUG_ASSERT(IS_PAGE_ALIGNED(size));
 
+    bool shadow = false;
+    if (strcmp(name, "mxkasan_shadow") == 0) {
+        shadow = true;
+    }
+
     size = ROUNDUP_PAGE_SIZE(size);
     if (size == 0)
         return MX_OK;
@@ -359,10 +381,13 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
     // TODO: decide if a null vmo object is worth it
 
     // for mxkasan, we pass in the size so that pages 
-    // can be faulted in as things go
+    // can be faulted in as things go, if necessary 
     mxtl::RefPtr<VmObject> vmo;
-    if (strcmp(name, "mxkasan_shadow") == 0)
-        vmo = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, size);
+    if (shadow) {
+        shadow_vmo_ = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, size);
+        vmo = shadow_vmo_;
+        vmo->SetShadow();
+    }
     else 
         vmo = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, 0);
     if (!vmo)
@@ -379,7 +404,7 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
     // map it, creating a new region
     void* ptr = reinterpret_cast<void*>(vaddr);
     return MapObjectInternal(mxtl::move(vmo), name, 0, size, &ptr, 0, VMM_FLAG_VALLOC_SPECIFIC,
-                             arch_mmu_flags);
+                             arch_mmu_flags, shadow);
 }
 
 status_t VmAspace::AllocPhysical(const char* name, size_t size, void** ptr, uint8_t align_pow2,
@@ -412,7 +437,7 @@ status_t VmAspace::AllocPhysical(const char* name, size_t size, void** ptr, uint
 
     arch_mmu_flags &= ~ARCH_MMU_FLAG_CACHE_MASK;
     return MapObjectInternal(mxtl::move(vmo), name, 0, size, ptr, align_pow2, vmm_flags,
-                     arch_mmu_flags);
+                     arch_mmu_flags, false);
 }
 
 status_t VmAspace::AllocContiguous(const char* name, size_t size, void** ptr, uint8_t align_pow2,
@@ -446,7 +471,7 @@ status_t VmAspace::AllocContiguous(const char* name, size_t size, void** ptr, ui
     }
 
     return MapObjectInternal(mxtl::move(vmo), name, 0, size, ptr, align_pow2, vmm_flags,
-                     arch_mmu_flags);
+                     arch_mmu_flags, false);
 }
 
 status_t VmAspace::Alloc(const char* name, size_t size, void** ptr, uint8_t align_pow2,
@@ -480,7 +505,7 @@ status_t VmAspace::Alloc(const char* name, size_t size, void** ptr, uint8_t alig
 
     // map it, creating a new region
     return MapObjectInternal(mxtl::move(vmo), name, 0, size, ptr, align_pow2, vmm_flags,
-                     arch_mmu_flags);
+                     arch_mmu_flags, false);
 }
 
 status_t VmAspace::FreeRegion(vaddr_t va) {

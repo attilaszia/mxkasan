@@ -193,6 +193,7 @@ void ktrace_init(unsigned level) {
     ktrace_state_t* ks = &KTRACE_STATE;
 
     uint32_t mb = cmdline_get_uint32("ktrace.bufsize", KTRACE_DEFAULT_BUFSIZE);
+    mb = 0; // hack
     uint32_t grpmask = cmdline_get_uint32("ktrace.grpmask", KTRACE_DEFAULT_GRPMASK);
 
     if (mb == 0) {

@@ -73,6 +73,8 @@ public:
     status_t GetShadowPageLocked(uint64_t offset, uint pf_flags, vm_page_t**, paddr_t*) override
         TA_NO_THREAD_SAFETY_ANALYSIS;
 
+    status_t SetShadow() override;
+
     status_t CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
                       mxtl::RefPtr<VmObject>* clone_vmo) override
         // Calls a Locked method of the child, which confuses analysis.
@@ -121,6 +123,9 @@ private:
     uint64_t size_ TA_GUARDED(lock_) = 0;
     uint64_t parent_offset_ TA_GUARDED(lock_) = 0;
     uint32_t pmm_alloc_flags_ TA_GUARDED(lock_) = PMM_ALLOC_FLAG_ANY;
+
+    bool is_shadow_ = false;
+    uint64_t shadow_pages_counter_ = 0;
 
     // a tree of pages
     VmPageList page_list_ TA_GUARDED(lock_);

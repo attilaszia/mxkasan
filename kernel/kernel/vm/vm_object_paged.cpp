@@ -150,12 +150,17 @@ size_t VmObjectPaged::AllocatedPagesInRange(uint64_t offset, uint64_t len) const
     size_t count = 0;
     // TODO: Figure out what to do with our parent's pages. If we're a clone,
     // page_list_ only contains pages that we've made copies of.
-    page_list_.ForEveryPage(
-        [&count, offset, new_len](const auto p, uint64_t off) {
-            if (off >= offset && off < offset + new_len) {
-                count++;
-            }
-        });
+    if(!is_shadow_) {
+        page_list_.ForEveryPage(
+            [&count, offset, new_len](const auto p, uint64_t off) {
+                if (off >= offset && off < offset + new_len) {
+                    count++;
+                }
+            });
+        }
+    else {
+         count = shadow_pages_counter_;
+    }
     return count;
 }
 
@@ -176,7 +181,16 @@ status_t VmObjectPaged::AddPageLocked(vm_page_t* p, uint64_t offset) {
     if (offset >= size_)
         return MX_ERR_OUT_OF_RANGE;
 
-    status_t err = page_list_.AddPage(p, offset);
+    status_t err;
+    if (!is_shadow_) {
+        err = page_list_.AddPage(p, offset);
+    } 
+    else {
+    // Do some book keeping of the allocated pages for shadow
+        shadow_pages_counter_ += 1;
+        err = MX_OK;
+    }
+
     if (err != MX_OK)
         return err;
 
@@ -233,6 +247,12 @@ mxtl::RefPtr<VmObject> VmObjectPaged::CreateFromROData(const void* data, size_t 
     }
 
     return vmo;
+}
+
+status_t VmObjectPaged::SetShadow() {
+    is_shadow_ = true;
+
+    return MX_OK;
 }
 
 status_t VmObjectPaged::GetShadowPageLocked(uint64_t offset, uint pf_flags, vm_page_t** const page_out, paddr_t* const pa_out) {
@@ -462,8 +482,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
     // TODO: remove once pmm returns zeroed pages
     ZeroPage(pa);
 
-    // TODO: clean this up, the point is that we don't do the administrative stuff
-    // for addresses in the shadow range
+    // TODO: revise that the other getpage function for mxkasan is needed or not
     status_t status = AddPageLocked(p, offset);
     DEBUG_ASSERT(status == MX_OK);
 

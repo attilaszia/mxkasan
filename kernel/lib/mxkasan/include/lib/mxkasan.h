@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <kernel/thread.h>
 
+
 #define MXKASAN_SHADOW_SCALE_SHIFT 3
 #define MXKASAN_SHADOW_OFFSET 0xffffde0000000000
 #define MXKASAN_SHADOW_START  0xffff000000000000
@@ -26,18 +27,19 @@
 // TODO: do this properly
 #define BITS_PER_LONG 64
 
-#define __alias(symbol)	__attribute__((alias(#symbol)))
+#define __alias(symbol)	__attribute__((weak, alias(#symbol)))
 
 #define _RET_IP_		(unsigned long)__builtin_return_address(0)
 
 struct mxkasan_access_info {
-	const void *access_addr;
-	const void *first_bad_addr;
+	const uint8_t *access_addr;
+	const uint8_t *first_bad_addr;
 	size_t access_size;
 	bool is_write;
 	unsigned long ip;
 };
 
+__BEGIN_CDECLS
 
 void mxkasan_report_error(struct mxkasan_access_info *info);
 void mxkasan_report_user_access(struct mxkasan_access_info *info);
@@ -45,11 +47,11 @@ void mxkasan_report(unsigned long addr, size_t size,
 		bool is_write, unsigned long ip);
 
 void mxkasan_init(void);
-void mxkasan_unpoison_shadow(const void *address, size_t size);
-void mxkasan_poison_shadow(const void *address, size_t size, u8 value);
+void mxkasan_poison_shadow(const uint8_t *address, size_t size, u8 value);
+void mxkasan_unpoison_shadow(const uint8_t *address, size_t size);
 
-void mxkasan_alloc_pages(const void* addr, size_t pages);
-void mxkasan_free_pages(const void* addr, size_t pages);
+void mxkasan_alloc_pages(const uint8_t* addr, size_t pages);
+void mxkasan_free_pages(const uint8_t* addr, size_t pages);
 
 void __asan_loadN(unsigned long addr, size_t size);
 void __asan_load1(unsigned long addr);
@@ -86,6 +88,8 @@ DEFINE_ASAN_REPORT_STORE_DEC(16);
 
 void __asan_report_load_n_noabort(unsigned long addr, size_t size);
 void __asan_report_store_n_noabort(unsigned long addr, size_t size);
+
+__END_CDECLS
 
 inline bool is_shadow_addr(vaddr_t va) {
 	if ((MXKASAN_SHADOW_OFFSET <= va) && 

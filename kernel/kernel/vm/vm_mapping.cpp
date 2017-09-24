@@ -22,7 +22,7 @@
 #include <lib/mxkasan.h>
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
-//#define LOCAL_TRACE 1 
+//#define LOCAL_TRACE 2
 
 VmMapping::VmMapping(VmAddressRegion& parent, vaddr_t base, size_t size, uint32_t vmar_flags,
                      mxtl::RefPtr<VmObject> vmo, uint64_t vmo_offset, uint arch_mmu_flags)
@@ -372,18 +372,24 @@ status_t VmMapping::UnmapVmoRangeLocked(uint64_t offset, uint64_t len) const {
     return MX_OK;
 }
 
-status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
-    canary_.Assert();
+status_t VmMapping::MapRangeLocked(size_t offset, size_t len, bool commit) {
 
     len = ROUNDUP(len, PAGE_SIZE);
     if (len == 0) {
         return MX_ERR_INVALID_ARGS;
     }
 
-    AutoLock guard(aspace_->lock());
     if (state_ != LifeCycleState::ALIVE) {
         return MX_ERR_BAD_STATE;
     }
+    // avoid recursion due to mxkasan
+
+    if (currently_mapping_) {
+        return MX_ERR_BAD_STATE;
+    }
+
+    currently_mapping_ = true;
+    auto ac_mxkasan = mxtl::MakeAutoCall([&]() { currently_mapping_ = false; });
 
     LTRACEF("region %p, offset %#zx, size %#zx, commit %d\n", this, offset, len, commit);
 
@@ -434,11 +440,26 @@ status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
         if (ret < 0) {
             TRACEF("error %d mapping page at va %#" PRIxPTR " pa %#" PRIxPTR "\n", ret, va, pa);
         }
-
+        LTRACEF_LEVEL(2, "mapped: %zu", mapped);
+    
         DEBUG_ASSERT(mapped == 1);
     }
 
     return MX_OK;
+}   
+
+status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
+    canary_.Assert();
+
+    len = ROUNDUP(len, PAGE_SIZE);
+    if (len == 0) {
+        return MX_ERR_INVALID_ARGS;
+    }
+
+    AutoLock guard(aspace_->lock());
+
+    return MapRangeLocked(offset, len, commit);
+
 }
 
 status_t VmMapping::DecommitRange(size_t offset, size_t len,
@@ -511,13 +532,13 @@ status_t VmMapping::DestroyLocked() {
 
 status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
     canary_.Assert();
-    DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
+    //DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
 
     DEBUG_ASSERT(va >= base_ && va <= base_ + size_ - 1);
 
     va = ROUNDDOWN(va, PAGE_SIZE);
 
-    bool is_shadow = is_shadow_addr(va); 
+    //bool is_shadow = is_shadow_addr(va); 
 
     uint64_t vmo_offset = va - base_ + object_offset_;
 
@@ -559,12 +580,12 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
     vm_page_t* page;
     status_t status;
 
-    if (is_shadow) {
+/*    if (is_shadow) {
         status = object_->GetShadowPageLocked(vmo_offset, pf_flags, &page, &new_pa);
     }
-    else {
-        status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
-    }
+    else {*/
+    status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
+/*    }*/
 
     if (status < 0) {
         TRACEF("ERROR: failed to fault in or grab existing page\n");

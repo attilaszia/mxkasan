@@ -52,6 +52,9 @@ public:
     // Get the root VMAR (briefly acquires the aspace lock)
     mxtl::RefPtr<VmAddressRegion> RootVmar();
 
+    // Get the root VMAR locked
+    mxtl::RefPtr<VmAddressRegion> RootVmarLocked();
+
     // destroy but not free the address space
     status_t Destroy();
 
@@ -134,7 +137,7 @@ public:
     // the public API purely for tests.
     status_t MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* name, uint64_t offset,
                                size_t size, void** ptr, uint8_t align_pow2, uint vmm_flags,
-                               uint arch_mmu_flags);
+                               uint arch_mmu_flags, bool shadow);
 
 #if WITH_LIB_VDSO
     uintptr_t vdso_base_address() const;
@@ -187,6 +190,9 @@ private:
     // root of virtual address space
     // Access to this reference is guarded by lock_.
     mxtl::RefPtr<VmAddressRegion> root_vmar_;
+
+    // shadow VMO 
+    mxtl::RefPtr<VmObject> shadow_vmo_;
 
     // PRNG used by VMARs for address choices.  We record the seed to enable
     // reproducible debugging.
