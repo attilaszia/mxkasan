@@ -914,6 +914,11 @@ static ssize_t heap_grow(size_t size, free_t **bucket, bool init) TA_NO_THREAD_S
     if (ptr == NULL)
         return MX_ERR_NO_MEMORY;
 
+    
+    mxkasan_init_heap_ptr = ptr;
+    mxkasan_init_heap_size = size;
+
+
     theheap.size += size;
 
     LTRACEF("growing heap by 0x%zx bytes, new ptr %p\n", size, ptr);

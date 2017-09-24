@@ -41,6 +41,10 @@ struct mxkasan_access_info {
 
 __BEGIN_CDECLS
 
+extern bool mxkasan_initialized;
+extern void* mxkasan_init_heap_ptr;
+extern size_t mxkasan_init_heap_size;
+
 void mxkasan_report_error(struct mxkasan_access_info *info);
 void mxkasan_report_user_access(struct mxkasan_access_info *info);
 void mxkasan_report(unsigned long addr, size_t size,

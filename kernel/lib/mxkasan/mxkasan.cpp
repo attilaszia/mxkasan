@@ -13,8 +13,11 @@
 #include <lib/mxkasan.h>
 #include <kernel/vm/vm_aspace.h>
 
-static bool mxkasan_initialized;
 mutex_t mxkasan_lock = MUTEX_INITIAL_VALUE(mxkasan_lock);
+
+bool mxkasan_initialized;
+void* mxkasan_init_heap_ptr;
+size_t mxkasan_init_heap_size;
 
 void mxkasan_alloc_pages(const uint8_t *addr, size_t pages)
 {
@@ -36,31 +39,36 @@ void mxkasan_free_pages(const uint8_t *addr, size_t pages)
 
 
 void mxkasan_init(void) {
-    uint8_t* testptr = (uint8_t*) 0xffffde0000000000 ;
+    mxkasan_initialized = true;
+
+    uint8_t* testptr = (uint8_t*) MXKASAN_SHADOW_OFFSET;
+
+    // Poisoning the initial heap
+    mxkasan_poison_shadow((uint8_t *)mxkasan_init_heap_ptr, (size_t)(mxkasan_init_heap_size), MXKASAN_REDZONE);
+
     testptr += 0xdead;
     printf("writing MXKASAN shadow memory at %#" PRIxPTR "\n", (unsigned long)testptr);
 
-    // This should result in a page fault bringing in the first page
+    // This should result in a page fault 
     *testptr = 0xaa;
     printf("reading back value at %#" PRIxPTR ": %x\n", (unsigned long)testptr, *testptr);
-
-    mxkasan_initialized = true;
-
 
     // Let's do some heap messaround
     testptr = (uint8_t*) malloc(128);
     *(testptr+129) = 0xde;   
 }
 
-void check_page(uint8_t* va, VmAspace* kernel_aspace) {
+bool is_page_mapped(uint8_t* va, VmAspace* kernel_aspace) {
 	uint page_flags;
     paddr_t pa;
     status_t err = arch_mmu_query(&kernel_aspace->arch_aspace(), (vaddr_t)va, &pa, &page_flags);
     
     if (err >= 0) 
-    	printf( "%#" PRIxPTR " page mapped\n", (unsigned long)va);
+    	//printf( "%#" PRIxPTR " page mapped\n", (unsigned long)va);
+    	return true;
     else
-    	printf( "%#" PRIxPTR " page not mapped\n", (unsigned long)va);
+    	//printf( "%#" PRIxPTR " page not mapped\n", (unsigned long)va);
+    	return false;
 }
 
 /*
@@ -82,11 +90,12 @@ void mxkasan_poison_shadow(const uint8_t *address, size_t size, u8 value) {
     VmAspace* kernel_aspace = VmAspace::kernel_aspace();
     mxtl::RefPtr<VmMapping> shadow_vmm = kernel_aspace->RootVmarLocked()->GetShadowVmMapping();
 
-    status_t status = shadow_vmm->PageFault((vaddr_t)shadow_start, 0x19);
+    status_t status = MX_OK;
+    if (!is_page_mapped(shadow_start, kernel_aspace))
+        status = shadow_vmm->PageFault((vaddr_t)shadow_start, 0x19);
 
     // Let's be greedy and map the next page as well to prevent boundary problems
-    status = shadow_vmm->PageFault((vaddr_t)(shadow_start + PAGE_SIZE), 0x19);
-
+    // status = shadow_vmm->PageFault((vaddr_t)(shadow_start + PAGE_SIZE), 0x19);
 
     if (status != MX_OK) {
     	printf("Poisoning unsuccessful at %#" PRIxPTR "\n", (unsigned long)address);
