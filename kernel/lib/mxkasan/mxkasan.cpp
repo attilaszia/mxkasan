@@ -19,13 +19,19 @@ bool mxkasan_initialized;
 void* mxkasan_init_heap_ptr;
 size_t mxkasan_init_heap_size;
 
+uint64_t mxkasan_allocated_before_init[1024][2];
+size_t mxkasan_alloc_count = 0;
+
 void mxkasan_alloc_pages(const uint8_t *addr, size_t pages)
 {
 	if (unlikely(!mxkasan_initialized))
 		return;
 
-	if (likely(addr))
+	if (likely(addr)) {
 		mxkasan_poison_shadow(addr, PAGE_SIZE * pages, MXKASAN_REDZONE);
+                printf("Poisoned page due to allocation at %p\n", addr);
+        }
+
 } 
 
 void mxkasan_free_pages(const uint8_t *addr, size_t pages)
@@ -51,7 +57,8 @@ void mxkasan_init(void) {
 
     uint8_t* testptr = (uint8_t*) MXKASAN_SHADOW_OFFSET;
 
-    // Poisoning the initial heap
+    // Poisoning the initial hea
+    printf("Poisoning initial heap at %p - %p\n", mxkasan_init_heap_ptr, (uint8_t*) ((uint8_t*) mxkasan_init_heap_ptr + mxkasan_init_heap_size));
     mxkasan_poison_shadow((uint8_t *)mxkasan_init_heap_ptr, (size_t)(mxkasan_init_heap_size), MXKASAN_REDZONE);
 
     testptr += 0xdead;
@@ -60,6 +67,15 @@ void mxkasan_init(void) {
     // This should result in a page fault 
     *testptr = 0xaa;
     printf("reading back value at %#" PRIxPTR ": %x\n", (unsigned long)testptr, *testptr);
+
+    printf("Unpoisoning pending allocations\n");
+    for (int current=0;mxkasan_allocated_before_init[current][0];current++) {
+        mxkasan_unpoison_shadow((uint8_t*)mxkasan_allocated_before_init[current][0],
+                                /* size */
+                                (size_t)
+                                (mxkasan_allocated_before_init[current][1] - 
+                                 mxkasan_allocated_before_init[current][0] ));
+    }
 
     // Let's do some heap messaround
     testptr = (uint8_t*) malloc(128);
@@ -116,9 +132,15 @@ void mxkasan_poison_shadow(const uint8_t *address, size_t size, u8 value) {
 
 void mxkasan_unpoison_shadow(const uint8_t *address, size_t size)
 {
-    if (unlikely(!mxkasan_initialized))
-		return;
-
+    if (unlikely(!mxkasan_initialized)) {
+        // If mxkasan is not initialized yet we have to keep track of
+        // allocations
+        //printf("Allocation before MXKASAN init: %p - %p\n", address, (address+size));
+        mxkasan_allocated_before_init[mxkasan_alloc_count][0] = (uint64_t)address;
+        mxkasan_allocated_before_init[mxkasan_alloc_count][1] = (uint64_t)address+size;
+        mxkasan_alloc_count += 1;
+        return;
+    }
 	mxkasan_poison_shadow(address, size, 0);
 
 	if (size & MXKASAN_SHADOW_MASK) {
