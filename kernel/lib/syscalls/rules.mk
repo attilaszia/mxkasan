@@ -46,4 +46,6 @@ MODULE_COMPILEFLAGS += -I$(BUILDDIR)/kernel/lib/vdso
 $(BUILDDIR)/$(LOCAL_DIR)/$(LOCAL_DIR)/syscalls.cpp.o: \
     $(BUILDDIR)/kernel/lib/vdso/vdso-valid-sysret.h
 
+#MODULE_COMPILEFLAGS += -fsanitize=kernel-address -mllvm -asan-stack=0 
+
 include make/module.mk

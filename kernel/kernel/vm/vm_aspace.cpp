@@ -387,6 +387,9 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
         shadow_vmo_ = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, size);
         vmo = shadow_vmo_;
         vmo->SetShadow();
+
+        const char* shadow_name = "mxkasan shadow";
+        vmo->set_name(shadow_name,strlen(shadow_name));
     }
     else 
         vmo = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, 0);

@@ -9,11 +9,11 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_SRCS += \
-	$(LOCAL_DIR)/mxkasan.cpp \
-	$(LOCAL_DIR)/report.cpp \
+	$(LOCAL_DIR)/test_mxkasan.cpp \
 
 MODULE_DEPS := \
     kernel/lib/mxtl \
-    kernel/lib/mxkasan_tests \
+
+MODULE_COMPILEFLAGS += -fsanitize=kernel-address -mllvm -asan-stack=0 
 
 include make/module.mk

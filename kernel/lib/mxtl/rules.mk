@@ -19,4 +19,6 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/inline_array_tests.cpp \
     $(LOCAL_DIR)/name_tests.cpp \
 
+MODULE_COMPILEFLAGS += -fsanitize=kernel-address -mllvm -asan-stack=0  
+
 include make/module.mk

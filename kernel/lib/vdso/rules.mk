@@ -41,4 +41,6 @@ $(BUILDDIR)/$(LOCAL_DIR)/vdso-valid-sysret.h: \
 	@mv -f $@.new $@
 GENERATED += $(BUILDDIR)/$(LOCAL_DIR)/vdso-valid-sysret.h
 
+MODULE_COMPILEFLAGS += -fsanitize=kernel-address -mllvm -asan-stack=0 
+
 include make/module.mk

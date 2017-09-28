@@ -37,6 +37,14 @@ void mxkasan_free_pages(const uint8_t *addr, size_t pages)
 		mxkasan_poison_shadow(addr, PAGE_SIZE * pages , MXKASAN_FREE_PAGE);
 }
 
+void mxkasan_tests(void) {
+	printf("performing MXKASAN tests ...\n");
+	mxkasan_global_oob();
+	malloc_uaf();
+	malloc_oob_left();
+	malloc_oob_right();
+	printf("... done.\n");
+}
 
 void mxkasan_init(void) {
     mxkasan_initialized = true;
@@ -56,6 +64,8 @@ void mxkasan_init(void) {
     // Let's do some heap messaround
     testptr = (uint8_t*) malloc(128);
     *(testptr+129) = 0xde;   
+
+    mxkasan_tests();
 }
 
 bool is_page_mapped(uint8_t* va, VmAspace* kernel_aspace) {
@@ -129,7 +139,6 @@ void mxkasan_unpoison_shadow(const uint8_t *address, size_t size)
 static inline bool memory_is_poisoned_1(unsigned long addr)
 {
 	s8 shadow_value = *(s8 *)mxkasan_mem_to_shadow((uint8_t *)addr);
-    
 	if (unlikely(shadow_value)) {
 		s8 last_accessible_byte = addr & MXKASAN_SHADOW_MASK;
 		return unlikely(last_accessible_byte >= shadow_value);
@@ -273,7 +282,10 @@ static inline bool memory_is_poisoned_n(unsigned long addr,
 
 static inline bool memory_is_poisoned(unsigned long addr, size_t size)
 {
-	if (__builtin_constant_p(size)) {
+//	if (__builtin_constant_p(size)) {
+//          ugly. meant to indicate that we are not relying on the
+//          memorz_is_poisoned_n function since these can be hardwired
+        if (true) {
 		switch (size) {
 		case 1:
 			return memory_is_poisoned_1(addr);
@@ -318,6 +330,8 @@ static inline void check_memory_region(unsigned long addr,
 	mxkasan_report(addr, size, write, _RET_IP_);
 }
 
+__BEGIN_CDECLS
+/*
 #define DEFINE_ASAN_LOAD_STORE(size)				\
 	void __asan_load##size(unsigned long addr)		\
 	{							\
@@ -327,8 +341,8 @@ static inline void check_memory_region(unsigned long addr,
 	{							\
 		check_memory_region(addr, size, true);		\
 	}							
+*/
 
-/*
 #define DEFINE_ASAN_LOAD_STORE(size)				\
 	void __asan_load##size(unsigned long addr)		\
 	{							\
@@ -343,7 +357,7 @@ static inline void check_memory_region(unsigned long addr,
 	}							\
 	__alias(__asan_store##size)				\
         void __asan_store##size##_noabort(unsigned long);       \
-*/
+
 DEFINE_ASAN_LOAD_STORE(1);
 DEFINE_ASAN_LOAD_STORE(2);
 DEFINE_ASAN_LOAD_STORE(4);
@@ -355,21 +369,23 @@ void __asan_loadN(unsigned long addr, size_t size)
 	check_memory_region(addr, size, false);
 }
 
-/*
+
 __alias(__asan_loadN)
 void __asan_loadN_noabort(unsigned long, size_t);
-*/
+
 
 void __asan_storeN(unsigned long addr, size_t size)
 {
 	check_memory_region(addr, size, true);
 }
 
-/*
+
 __alias(__asan_storeN)
 void __asan_storeN_noabort(unsigned long, size_t);
-*/
+
 
 /* to shut up compiler complaints */
 void __asan_handle_no_return(void) {}
+
+__END_CDECLS
 

@@ -39,6 +39,17 @@ struct mxkasan_access_info {
 	unsigned long ip;
 };
 
+// Test function declarations
+
+void malloc_oob_right(void);
+
+void malloc_oob_left(void);
+
+void malloc_uaf(void);
+
+void mxkasan_global_oob(void);
+
+
 __BEGIN_CDECLS
 
 extern bool mxkasan_initialized;
@@ -53,6 +64,7 @@ void mxkasan_report(unsigned long addr, size_t size,
 void mxkasan_init(void);
 void mxkasan_poison_shadow(const uint8_t *address, size_t size, u8 value);
 void mxkasan_unpoison_shadow(const uint8_t *address, size_t size);
+void mxkasan_tests(void);
 
 void mxkasan_alloc_pages(const uint8_t* addr, size_t pages);
 void mxkasan_free_pages(const uint8_t* addr, size_t pages);

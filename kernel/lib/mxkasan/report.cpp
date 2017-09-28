@@ -58,7 +58,7 @@ static void print_error_description(struct mxkasan_access_info *info)
  		break;
 	}
 
-	printf("BUG: MXKASan: %s in %pS at addr %p\n",
+	printf("BUG: MXKASan: %s in %p at addr %p\n",
 		bug_type, (void *)info->ip,
 		info->access_addr);
 
@@ -69,7 +69,7 @@ static void print_error_description(struct mxkasan_access_info *info)
 }
 
 static void dump_stack (void) {
-	printf("TODO: stack dump\n");
+	thread_print_backtrace(get_current_thread(), __GET_FRAME(0));
 }
 
 
@@ -114,14 +114,16 @@ static void print_shadow_for_address(const uint8_t *addr)
 		mxkasan_disable_current();
 
         // TODO: make this prettier
-		hexdump(shadow_row, SHADOW_BYTES_PER_ROW);
+		hexdump8(shadow_row, SHADOW_BYTES_PER_ROW);
 
 		mxkasan_enable_current();
 
-		if (row_is_guilty(shadow_row, shadow))
-			printf("%*c\n",(int)
-				shadow_pointer_offset(shadow_row, shadow),
-				'^');
+		if (row_is_guilty(shadow_row, shadow)) {
+			for(int i=0; i< (int)
+				shadow_pointer_offset(shadow_row, shadow); i++)
+				printf(" ");
+			printf("^\n");
+		}
 
 		shadow_row += SHADOW_BYTES_PER_ROW;
 	}
