@@ -376,7 +376,7 @@ include make/sysgen.mk
 
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 #i dont think it does anything meaningful 
-GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-fuchsia
+#GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-fuchsia
 #GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-none
 endif
 
@@ -538,6 +538,8 @@ READELF := $(CLANG_TOOLCHAIN_PREFIX)llvm-readobj -elf-output-style=GNU
 CPPFILT := $(CLANG_TOOLCHAIN_PREFIX)llvm-cxxfilt
 SIZE := $(CLANG_TOOLCHAIN_PREFIX)llvm-size
 NM := $(CLANG_TOOLCHAIN_PREFIX)llvm-nm
+DISABLESTACKASAN := -mllvm asan-stack=0
+DISABLEGLOBALASAN := -mllvm asan-global=0
 else
 CC := $(TOOLCHAIN_PREFIX)gcc
 AR := $(TOOLCHAIN_PREFIX)ar
@@ -546,6 +548,8 @@ READELF := $(TOOLCHAIN_PREFIX)readelf
 CPPFILT := $(TOOLCHAIN_PREFIX)c++filt
 SIZE := $(TOOLCHAIN_PREFIX)size
 NM := $(TOOLCHAIN_PREFIX)nm
+DISABLESTACKASAN :=  --param asan-stack=0
+DISABLEGLOBALASAN := --param asan-global=0
 endif
 LD := $(TOOLCHAIN_PREFIX)ld
 ifeq ($(call TOBOOL,$(USE_LLD)),true)
@@ -573,7 +577,7 @@ export GCC_COLORS ?= 1
 # setup host toolchain
 # default to prebuilt clang
 FOUND_HOST_GCC ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)gcc)
-HOST_TOOLCHAIN_PREFIX ?= $(CLANG_TOOLCHAIN_PREFIX)
+HOST_TOOLCHAIN_PREFIX ?= ""
 HOST_USE_CLANG ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)clang)
 ifneq ($(HOST_USE_CLANG),)
 HOST_CC      := $(HOST_TOOLCHAIN_PREFIX)clang

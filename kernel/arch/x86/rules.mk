@@ -126,6 +126,8 @@ KERNEL_COMPILEFLAGS += -mno-80387 -mno-fp-ret-in-387
 endif
 KERNEL_DEFINES += WITH_NO_FP=1
 
+
+	# lets remove this for the time being
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 ifndef ARCH_x86_64_CLANG_TARGET
 ARCH_x86_64_CLANG_TARGET := x86_64-fuchsia

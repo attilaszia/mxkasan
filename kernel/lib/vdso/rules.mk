@@ -40,7 +40,7 @@ $(BUILDDIR)/$(LOCAL_DIR)/vdso-valid-sysret.h: \
 	$(NOECHO)$(SHELLEXEC) $^ > $@.new
 	@mv -f $@.new $@
 GENERATED += $(BUILDDIR)/$(LOCAL_DIR)/vdso-valid-sysret.h
-
-MODULE_COMPILEFLAGS += -fsanitize=kernel-address -mllvm -asan-stack=0 
+	
+MODULE_COMPILEFLAGS += -fsanitize=kernel-address $(DISABLESTACKASAN) 
 
 include make/module.mk
