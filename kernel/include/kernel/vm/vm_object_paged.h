@@ -69,10 +69,6 @@ public:
         // Calls a Locked method of the parent, which confuses analysis.
         TA_NO_THREAD_SAFETY_ANALYSIS;
 
-    // Does the same thing, but without adding the page to the page list
-    status_t GetShadowPageLocked(uint64_t offset, uint pf_flags, vm_page_t**, paddr_t*) override
-        TA_NO_THREAD_SAFETY_ANALYSIS;
-
     status_t SetShadow() override;
 
     status_t CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
