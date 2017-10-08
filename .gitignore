@@ -2,6 +2,7 @@
 build-*/
 *.swp
 *.swo
+*.py
 *~
 tags
 TAGS
