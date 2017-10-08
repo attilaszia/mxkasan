@@ -19,7 +19,7 @@ bool mxkasan_initialized;
 void* mxkasan_init_heap_ptr;
 size_t mxkasan_init_heap_size;
 
-uint64_t mxkasan_allocated_before_init[1024][2];
+struct mxkasan_pending_alloc pending_alloc[1024];
 size_t mxkasan_alloc_count = 0;
 
 void mxkasan_alloc_pages(const uint8_t *addr, size_t pages)
@@ -69,12 +69,11 @@ void mxkasan_init(void) {
     printf("reading back value at %#" PRIxPTR ": %x\n", (unsigned long)testptr, *testptr);
 
     printf("Unpoisoning pending allocations\n");
-    for (int current=0;mxkasan_allocated_before_init[current][0];current++) {
-        mxkasan_unpoison_shadow((uint8_t*)mxkasan_allocated_before_init[current][0],
+    for (size_t current=0;current < mxkasan_alloc_count;current++) {
+        mxkasan_unpoison_shadow((uint8_t*)pending_alloc[current].start,
                                 /* size */
                                 (size_t)
-                                (mxkasan_allocated_before_init[current][1] - 
-                                 mxkasan_allocated_before_init[current][0] ));
+                                (pending_alloc[current].end - pending_alloc[current].start));
     }
 
     // Let's do some heap messaround
@@ -136,8 +135,8 @@ void mxkasan_unpoison_shadow(const uint8_t *address, size_t size)
         // If mxkasan is not initialized yet we have to keep track of
         // allocations
         //printf("Allocation before MXKASAN init: %p - %p\n", address, (address+size));
-        mxkasan_allocated_before_init[mxkasan_alloc_count][0] = (uint64_t)address;
-        mxkasan_allocated_before_init[mxkasan_alloc_count][1] = (uint64_t)address+size;
+        pending_alloc[mxkasan_alloc_count].start = address;
+        pending_alloc[mxkasan_alloc_count].end   = address+size;
         mxkasan_alloc_count += 1;
         return;
     }

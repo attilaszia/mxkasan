@@ -41,6 +41,11 @@ struct mxkasan_access_info {
 	unsigned long ip;
 };
 
+struct mxkasan_pending_alloc {
+	const uint8_t* start; 
+	const uint8_t* end;
+};
+
 // Test function declarations
 
 void malloc_oob_right(void);
