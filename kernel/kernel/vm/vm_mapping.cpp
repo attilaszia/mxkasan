@@ -580,12 +580,7 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
     vm_page_t* page;
     status_t status;
 
-/*    if (is_shadow) {
-        status = object_->GetShadowPageLocked(vmo_offset, pf_flags, &page, &new_pa);
-    }
-    else {*/
     status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
-/*    }*/
 
     if (status < 0) {
         TRACEF("ERROR: failed to fault in or grab existing page\n");
