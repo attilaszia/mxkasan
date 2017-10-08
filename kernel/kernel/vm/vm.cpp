@@ -23,6 +23,7 @@
 #include <trace.h>
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)  
+//#define LOCAL_TRACE 1
 
 extern int _start;
 extern int _end;
@@ -35,6 +36,7 @@ extern int __data_start;
 extern int __data_end;
 extern int __bss_start;
 extern int __bss_end;
+
 
 // boot time allocated page full of zeros
 vm_page_t* zero_page;

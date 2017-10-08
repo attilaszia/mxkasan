@@ -14,6 +14,6 @@ MODULE_SRCS += \
 MODULE_DEPS := \
     kernel/lib/mxtl \
 
-MODULE_COMPILEFLAGS += -fsanitize=kernel-address $(DISABLESTACKASAN) 
+MODULE_COMPILEFLAGS += -fsanitize=kernel-address
 
 include make/module.mk

@@ -376,7 +376,7 @@ include make/sysgen.mk
 
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 #i dont think it does anything meaningful 
-#GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-fuchsia
+GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-fuchsia
 #GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-none
 endif
 
@@ -538,8 +538,8 @@ READELF := $(CLANG_TOOLCHAIN_PREFIX)llvm-readobj -elf-output-style=GNU
 CPPFILT := $(CLANG_TOOLCHAIN_PREFIX)llvm-cxxfilt
 SIZE := $(CLANG_TOOLCHAIN_PREFIX)llvm-size
 NM := $(CLANG_TOOLCHAIN_PREFIX)llvm-nm
-DISABLESTACKASAN := -mllvm asan-stack=0
-DISABLEGLOBALASAN := -mllvm asan-global=0
+DISABLESTACKASAN := -mllvm --asan-stack=0 
+DISABLEGLOBALASAN := -mllvm --asan-globals=0 
 else
 CC := $(TOOLCHAIN_PREFIX)gcc
 AR := $(TOOLCHAIN_PREFIX)ar
@@ -606,8 +606,8 @@ endif
 HOST_OBJCOPY := $(HOST_TOOLCHAIN_PREFIX)objcopy
 HOST_STRIP   := $(HOST_TOOLCHAIN_PREFIX)strip
 
-# Host compile flags
-HOST_COMPILEFLAGS := -Wall -g -O2 -Isystem/public -Isystem/private -I$(GENERATED_INCLUDES)
+# Host compile flags, change back to O2 when done
+HOST_COMPILEFLAGS := -Wall -g -O0 -Isystem/public -Isystem/private -I$(GENERATED_INCLUDES)
 HOST_CFLAGS := -std=c11
 HOST_CPPFLAGS := -std=c++14 -fno-exceptions -fno-rtti
 HOST_LDFLAGS :=

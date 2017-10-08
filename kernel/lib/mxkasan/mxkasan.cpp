@@ -45,7 +45,7 @@ void mxkasan_free_pages(const uint8_t *addr, size_t pages)
 
 void mxkasan_tests(void) {
 	printf("performing MXKASAN tests ...\n");
-	mxkasan_global_oob();
+	//mxkasan_global_oob();
 	malloc_uaf();
 	malloc_oob_left();
 	malloc_oob_right();

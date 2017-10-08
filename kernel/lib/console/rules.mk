@@ -12,6 +12,5 @@ MODULE := $(LOCAL_DIR)
 MODULE_SRCS += \
 	$(LOCAL_DIR)/console.c
 
-MODULE_COMPILEFLAGS += -fsanitize=kernel-address $(DISABLESTACKASAN) 
 
 include make/module.mk

@@ -13,15 +13,17 @@
 
 
 #define MXKASAN_SHADOW_SCALE_SHIFT 3
-#define MXKASAN_SHADOW_OFFSET 0xffffde0000000000
-#define MXKASAN_SHADOW_START  0xffff000000000000
-#define MXKASAN_SHADOW_SIZE 0x100000000000
+// These are architecture specific now
+// #define MXKASAN_SHADOW_OFFSET 0xffffde0000000000
+// #define MXKASAN_SHADOW_START  0xffff000000000000
+
+// #define MXKASAN_SHADOW_SIZE 0x100000000000
 #define MXKASAN_SHADOW_SCALE_SIZE (1UL << MXKASAN_SHADOW_SCALE_SHIFT)
 #define MXKASAN_SHADOW_MASK       (MXKASAN_SHADOW_SCALE_SIZE - 1)
 
 #define MXKASAN_FREE_PAGE         0xFF  /* page was freed */
 #define MXKASAN_SHADOW_GAP        0xF9  /* address belongs to shadow memory */
-#define MXKASAN_REDZONE   	      0xFC  /* full page redzone */
+#define MXKASAN_REDZONE   	  0xFC  /* full page redzone */
 #define MXKASAN_MALLOC_FREE       0xFB  /* object was freed */
 
 // TODO: do this properly
@@ -118,8 +120,7 @@ inline bool is_shadow_addr(vaddr_t va) {
 
 static inline uint8_t* mxkasan_mem_to_shadow(const uint8_t* addr)
 {
-	unsigned long address = (unsigned long)addr << 16;
-	address = (unsigned long)address >> 16;
+	unsigned long address = (unsigned long)addr - MXKASAN_SHADOW_START;
 	return (uint8_t*)((unsigned long)address >> MXKASAN_SHADOW_SCALE_SHIFT)
 		+ MXKASAN_SHADOW_OFFSET;
 }
