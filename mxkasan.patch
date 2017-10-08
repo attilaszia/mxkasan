@@ -1,0 +1,2218 @@
+diff --git a/.gitignore b/.gitignore
+index 1eeea16..025d886 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -2,6 +2,7 @@
+ build-*/
+ *.swp
+ *.swo
++*.py
+ *~
+ tags
+ TAGS
+@@ -28,3 +29,4 @@ compile_commands.json
+ /prebuilt/config.mk
+ /prebuilt/config.mk.bak
+ /AnalysisResult/
++/build*
+diff --git a/compileasmuchaspossible.py b/compileasmuchaspossible.py
+new file mode 100755
+index 0000000..8affb72
+--- /dev/null
++++ b/compileasmuchaspossible.py
+@@ -0,0 +1,50 @@
++import subprocess
++import time
++import re
++import os
++
++result = [os.path.join(dp, f)[2:] for dp, dn, filenames in os.walk("./kernel/lib/magenta") for f in filenames if f[-3:]=='cpp'  ] #possible filter
++
++print result
++
++
++def build_source(sourcetobuild, revert = False):
++
++    output = subprocess.check_output("make -j32 magenta-qemu-arm64 USE_CLANG=yes --just-print | grep "+ sourcetobuild, shell=True)
++
++    sanitizer = " -fsanitize=kernel-address -mllvm -asan-stack=0"
++
++    if (revert):
++        sanitizer = ""
++
++    print "Compiling " + sourcetobuild
++
++    command = output.split('\n',1)[1]
++    command = re.findall("(.*)echo",command, flags=re.DOTALL)[0][:-1]
++    print command
++
++    print subprocess.check_output(command +sanitizer, shell=True)
++
++    print "Linking it in"
++
++    print subprocess.check_output("make -j32 magenta-qemu-arm64 USE_CLANG=yes", shell =True)
++
++for filetobuild in result:
++    build_source(filetobuild)
++
++    print "Starting up kernel"
++
++    p = subprocess.Popen("./scripts/run-magenta-arm64 -C", shell=True, stdout=subprocess.PIPE)
++    data = p.stdout.read(10000)
++    p.kill()
++
++    if ( len(re.findall("MXKASAN", data)) > 0):
++        print "Success"
++    else:
++        print "Did not boot correctly, revert"
++        build_source(filetobuild, True)
++
++
++
++
++
+diff --git a/kernel/arch/arm64/mmu.cpp b/kernel/arch/arm64/mmu.cpp
+index 63459fa..c9fe7df 100644
+--- a/kernel/arch/arm64/mmu.cpp
++++ b/kernel/arch/arm64/mmu.cpp
+@@ -123,6 +123,8 @@ static pte_t mmu_flags_to_pte_attr(uint flags) {
+     return attr;
+ }
+ 
++
++
+ status_t arch_mmu_query(arch_aspace_t* aspace, vaddr_t vaddr, paddr_t* paddr, uint* flags) {
+     ulong index;
+     uint index_shift;
+diff --git a/kernel/arch/arm64/rules.mk b/kernel/arch/arm64/rules.mk
+index 6d12d24..bc2deba 100644
+--- a/kernel/arch/arm64/rules.mk
++++ b/kernel/arch/arm64/rules.mk
+@@ -62,16 +62,23 @@ ARCH_OPTFLAGS := -O2
+ # This is necessary for unwinding through optimized code.
+ GLOBAL_COMPILEFLAGS += -fasynchronous-unwind-tables
+ 
+-KERNEL_ASPACE_BASE ?= 0xffff000000000000
+-KERNEL_ASPACE_SIZE ?= 0x0001000000000000
+-USER_ASPACE_BASE   ?= 0x0000000001000000
+-USER_ASPACE_SIZE   ?= 0x0000fffffe000000
++KERNEL_ASPACE_BASE    ?= 0xffff000000000000
++KERNEL_ASPACE_SIZE    ?= 0x0001000000000000
++USER_ASPACE_BASE      ?= 0x0000000001000000
++USER_ASPACE_SIZE      ?= 0x0000fffffe000000
++
++MXKASAN_SHADOW_OFFSET ?= 0xffffde0000000000
++MXKASAN_SHADOW_START  ?= 0xffff000000000000
++MXKASAN_SHADOW_SIZE   ?= 0x0000100000000000
+ 
+ GLOBAL_DEFINES += \
+     KERNEL_ASPACE_BASE=$(KERNEL_ASPACE_BASE) \
+     KERNEL_ASPACE_SIZE=$(KERNEL_ASPACE_SIZE) \
+     USER_ASPACE_BASE=$(USER_ASPACE_BASE) \
+-    USER_ASPACE_SIZE=$(USER_ASPACE_SIZE)
++    USER_ASPACE_SIZE=$(USER_ASPACE_SIZE) \
++    MXKASAN_SHADOW_OFFSET=$(MXKASAN_SHADOW_OFFSET) \
++    MXKASAN_SHADOW_START=$(MXKASAN_SHADOW_START) \
++    MXKASAN_SHADOW_SIZE=$(MXKASAN_SHADOW_SIZE) \
+ 
+ KERNEL_BASE ?= $(KERNEL_ASPACE_BASE)
+ KERNEL_LOAD_OFFSET ?= 0
+@@ -90,6 +97,7 @@ TOOLCHAIN_PREFIX := $(ARCH_$(ARCH)_TOOLCHAIN_PREFIX)
+ 
+ ARCH_COMPILEFLAGS += $(ARCH_$(ARCH)_COMPILEFLAGS)
+ 
++CLANG_ARCH := aarch64
+ ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+ GLOBAL_LDFLAGS += -m aarch64elf
+ GLOBAL_MODULE_LDFLAGS += -m aarch64elf
+@@ -105,11 +113,6 @@ KEEP_FRAME_POINTER_COMPILEFLAGS += -mno-omit-leaf-frame-pointer
+ 
+ ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+ 
+-ifndef ARCH_arm64_CLANG_TARGET
+-ARCH_arm64_CLANG_TARGET := aarch64-fuchsia
+-endif
+-GLOBAL_COMPILEFLAGS += --target=$(ARCH_arm64_CLANG_TARGET)
+-
+ KERNEL_COMPILEFLAGS += -mcmodel=kernel
+ 
+ # Clang now supports -fsanitize=safe-stack with -mcmodel=kernel.
+@@ -117,6 +120,10 @@ KERNEL_COMPILEFLAGS += $(SAFESTACK)
+ 
+ endif
+ 
++# tell the compiler to leave x18 alone so we can use it to point
++# at the current cpu structure
++KERNEL_COMPILEFLAGS += -ffixed-x18
++
+ # make sure some bits were set up
+ MEMVARS_SET := 0
+ ifneq ($(MEMBASE),)
+diff --git a/kernel/arch/arm64/toolchain.mk b/kernel/arch/arm64/toolchain.mk
+index 190df77..ecd8b4e 100644
+--- a/kernel/arch/arm64/toolchain.mk
++++ b/kernel/arch/arm64/toolchain.mk
+@@ -5,22 +5,22 @@
+ # license that can be found in the LICENSE file or at
+ # https://opensource.org/licenses/MIT
+ 
+-ifndef ARCH_arm64_TOOLCHAIN_INCLUDED
+-ARCH_arm64_TOOLCHAIN_INCLUDED := 1
++#ifndef ARCH_arm64_TOOLCHAIN_INCLUDED
++#ARCH_arm64_TOOLCHAIN_INCLUDED := 1
+ 
+-ifndef ARCH_arm64_TOOLCHAIN_PREFIX
+-ARCH_arm64_TOOLCHAIN_PREFIX := aarch64-elf-
+-FOUNDTOOL=$(shell which $(ARCH_arm64_TOOLCHAIN_PREFIX)gcc)
+-ifeq ($(FOUNDTOOL),)
+-ARCH_arm64_TOOLCHAIN_PREFIX := aarch64-linux-android-
+-FOUNDTOOL=$(shell which $(ARCH_arm64_TOOLCHAIN_PREFIX)gcc)
+-ifeq ($(FOUNDTOOL),)
+-$(error cannot find toolchain, please set ARCH_arm64_TOOLCHAIN_PREFIX or add it to your path)
+-endif
+-endif
+-endif
++#ifndef ARCH_arm64_TOOLCHAIN_PREFIX
++#ARCH_arm64_TOOLCHAIN_PREFIX := aarch64-elf-
++#FOUNDTOOL=$(shell which $(ARCH_arm64_TOOLCHAIN_PREFIX)gcc)
++#ifeq ($(FOUNDTOOL),)
++#ARCH_arm64_TOOLCHAIN_PREFIX := aarch64-linux-android-
++#FOUNDTOOL=$(shell which $(ARCH_arm64_TOOLCHAIN_PREFIX)gcc)
++#ifeq ($(FOUNDTOOL),)
++#$(error cannot find toolchain, please set ARCH_arm64_TOOLCHAIN_PREFIX or add it to your path)
++#endif
++#endif
++#endif
+ 
+-endif
++#endif
+ 
+ # Clang
+ ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+diff --git a/kernel/arch/x86/rules.mk b/kernel/arch/x86/rules.mk
+index 16d2b4b..649e5b8 100644
+--- a/kernel/arch/x86/rules.mk
++++ b/kernel/arch/x86/rules.mk
+@@ -23,6 +23,12 @@ USER_ASPACE_BASE   ?= 0x0000000001000000UL # 16MB
+ # USER_ASPACE_BASE from that value gives the value for USER_ASPACE_SIZE
+ # below.
+ USER_ASPACE_SIZE   ?= 0x00007ffffefff000UL
++
++MXKASAN_SHADOW_OFFSET ?=  0xfffffff000000000UL
++MXKASAN_SHADOW_START  ?=  0xffffff8000000000UL
++# 64 Gigs 
++MXKASAN_SHADOW_SIZE   ?=  0x0000000dfffffff0UL 
++
+ SUBARCH_DIR := $(LOCAL_DIR)/64
+ 
+ SUBARCH_BUILDDIR := $(call TOBUILDDIR,$(SUBARCH_DIR))
+@@ -39,7 +45,10 @@ GLOBAL_DEFINES += \
+ 	KERNEL_ASPACE_BASE=$(KERNEL_ASPACE_BASE) \
+ 	KERNEL_ASPACE_SIZE=$(KERNEL_ASPACE_SIZE) \
+ 	USER_ASPACE_BASE=$(USER_ASPACE_BASE) \
+-	USER_ASPACE_SIZE=$(USER_ASPACE_SIZE)
++	USER_ASPACE_SIZE=$(USER_ASPACE_SIZE) \
++        MXKASAN_SHADOW_OFFSET=$(MXKASAN_SHADOW_OFFSET) \
++        MXKASAN_SHADOW_START=$(MXKASAN_SHADOW_START) \
++        MXKASAN_SHADOW_SIZE=$(MXKASAN_SHADOW_SIZE) \
+ 
+ MODULE_SRCS += \
+ 	$(SUBARCH_DIR)/start.S \
+@@ -126,6 +135,8 @@ KERNEL_COMPILEFLAGS += -mno-80387 -mno-fp-ret-in-387
+ endif
+ KERNEL_DEFINES += WITH_NO_FP=1
+ 
++# x86 build with clang seems to need this
++CLANG_ARCH := x86_64
+ ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+ ifndef ARCH_x86_64_CLANG_TARGET
+ ARCH_x86_64_CLANG_TARGET := x86_64-fuchsia
+diff --git a/kernel/include/kernel/thread.h b/kernel/include/kernel/thread.h
+index 1be740f..4072220 100644
+--- a/kernel/include/kernel/thread.h
++++ b/kernel/include/kernel/thread.h
+@@ -134,6 +134,9 @@ typedef struct thread {
+     int retcode;
+     struct wait_queue retcode_wait_queue;
+ 
++    /* mxkasan stuff */
++    unsigned int mxkasan_depth;
++
+     char name[THREAD_NAME_LENGTH];
+ #if WITH_DEBUG_LINEBUFFER
+     /* buffering for debug/klog output */
+@@ -197,7 +200,7 @@ void thread_reschedule(void); /* revaluate the run queue on the current cpu,
+ 
+ void thread_owner_name(thread_t *t, char out_name[THREAD_NAME_LENGTH]);
+ 
+-#define THREAD_BACKTRACE_DEPTH 10
++#define THREAD_BACKTRACE_DEPTH 30
+ typedef struct thread_backtrace {
+     void* pc[THREAD_BACKTRACE_DEPTH];
+ } thread_backtrace_t;
+diff --git a/kernel/include/kernel/vm/vm_address_region.h b/kernel/include/kernel/vm/vm_address_region.h
+index 7838213..793ae7f 100644
+--- a/kernel/include/kernel/vm/vm_address_region.h
++++ b/kernel/include/kernel/vm/vm_address_region.h
+@@ -215,6 +215,10 @@ public:
+                                      uint arch_mmu_flags, const char* name,
+                                      mxtl::RefPtr<VmMapping>* out);
+ 
++    virtual status_t SetShadowVmMapping(mxtl::RefPtr<VmMapping> shadow_vmm);
++
++    mxtl::RefPtr<VmMapping> GetShadowVmMapping();
++
+     // Find the child region that contains the given addr.  If addr is in a gap,
+     // returns nullptr.  This is a non-recursive search.
+     virtual mxtl::RefPtr<VmAddressRegionOrMapping> FindRegion(vaddr_t addr);
+@@ -328,6 +332,8 @@ private:
+     // list of subregions, indexed by base address
+     ChildList subregions_;
+ 
++    mxtl::RefPtr<VmMapping> shadow_vmm_;
++
+     const char name_[32] = {};
+ };
+ 
+@@ -416,6 +422,9 @@ public:
+     // Map in pages from the underlying vm object, optionally committing pages as it goes
+     status_t MapRange(size_t offset, size_t len, bool commit);
+ 
++    // Same thing without the aspace lock. (for mxkasan)
++    status_t MapRangeLocked(size_t offset, size_t len, bool commit);
++
+     // Unmap a subset of the region of memory in the containing address space,
+     // returning it to the parent region to allocate.  If all of the memory is unmapped,
+     // Destroy()s this mapping.  If a subrange of the mapping is specified, the
+@@ -485,4 +494,6 @@ private:
+ 
+     // used to detect recursions through the vmo fault path
+     bool currently_faulting_ = false;
++
++    bool currently_mapping_ = false;
+ };
+diff --git a/kernel/include/kernel/vm/vm_aspace.h b/kernel/include/kernel/vm/vm_aspace.h
+index 9e17ebe..22b2a39 100644
+--- a/kernel/include/kernel/vm/vm_aspace.h
++++ b/kernel/include/kernel/vm/vm_aspace.h
+@@ -52,6 +52,9 @@ public:
+     // Get the root VMAR (briefly acquires the aspace lock)
+     mxtl::RefPtr<VmAddressRegion> RootVmar();
+ 
++    // Get the root VMAR locked
++    mxtl::RefPtr<VmAddressRegion> RootVmarLocked();
++
+     // destroy but not free the address space
+     status_t Destroy();
+ 
+@@ -134,7 +137,7 @@ public:
+     // the public API purely for tests.
+     status_t MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* name, uint64_t offset,
+                                size_t size, void** ptr, uint8_t align_pow2, uint vmm_flags,
+-                               uint arch_mmu_flags);
++                               uint arch_mmu_flags, bool shadow);
+ 
+ #if WITH_LIB_VDSO
+     uintptr_t vdso_base_address() const;
+@@ -188,6 +191,9 @@ private:
+     // Access to this reference is guarded by lock_.
+     mxtl::RefPtr<VmAddressRegion> root_vmar_;
+ 
++    // shadow VMO 
++    mxtl::RefPtr<VmObject> shadow_vmo_;
++
+     // PRNG used by VMARs for address choices.  We record the seed to enable
+     // reproducible debugging.
+     crypto::PRNG aslr_prng_;
+diff --git a/kernel/include/kernel/vm/vm_object.h b/kernel/include/kernel/vm/vm_object.h
+index 347c921..9c92a46 100644
+--- a/kernel/include/kernel/vm/vm_object.h
++++ b/kernel/include/kernel/vm/vm_object.h
+@@ -160,6 +160,15 @@ public:
+         return MX_ERR_NOT_SUPPORTED;
+     }
+ 
++    virtual status_t SetShadow() {
++        return MX_ERR_NOT_SUPPORTED;
++    }
++
++    // Same thing for shadow
++    virtual status_t GetShadowPageLocked(uint64_t offset, uint pf_flags, vm_page_t**, paddr_t*) TA_REQ(lock_) {
++        return MX_ERR_NOT_SUPPORTED;
++    }
++
+     Mutex* lock() TA_RET_CAP(lock_) { return &lock_; }
+     Mutex& lock_ref() TA_RET_CAP(lock_) { return lock_; }
+ 
+diff --git a/kernel/include/kernel/vm/vm_object_paged.h b/kernel/include/kernel/vm/vm_object_paged.h
+index 036685e..bbc0ee1 100644
+--- a/kernel/include/kernel/vm/vm_object_paged.h
++++ b/kernel/include/kernel/vm/vm_object_paged.h
+@@ -69,6 +69,8 @@ public:
+         // Calls a Locked method of the parent, which confuses analysis.
+         TA_NO_THREAD_SAFETY_ANALYSIS;
+ 
++    status_t SetShadow() override;
++
+     status_t CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
+                       mxtl::RefPtr<VmObject>* clone_vmo) override
+         // Calls a Locked method of the child, which confuses analysis.
+@@ -118,6 +120,9 @@ private:
+     uint64_t parent_offset_ TA_GUARDED(lock_) = 0;
+     uint32_t pmm_alloc_flags_ TA_GUARDED(lock_) = PMM_ALLOC_FLAG_ANY;
+ 
++    bool is_shadow_ = false;
++    uint64_t shadow_pages_counter_ = 0;
++
+     // a tree of pages
+     VmPageList page_list_ TA_GUARDED(lock_);
+ };
+diff --git a/kernel/kernel/rules.mk b/kernel/kernel/rules.mk
+index e4f18bf..1ce1db2 100644
+--- a/kernel/kernel/rules.mk
++++ b/kernel/kernel/rules.mk
+@@ -15,6 +15,7 @@ MODULE_DEPS := \
+ 	kernel/lib/heap \
+ 	kernel/lib/libc \
+ 	kernel/lib/mxtl \
++	kernel/lib/mxkasan \
+ 
+ 
+ MODULE_SRCS := \
+diff --git a/kernel/kernel/vm/rules.mk b/kernel/kernel/vm/rules.mk
+index 0cbc022..d79fb49 100644
+--- a/kernel/kernel/vm/rules.mk
++++ b/kernel/kernel/vm/rules.mk
+@@ -32,4 +32,5 @@ MODULE_SRCS += \
+     $(LOCAL_DIR)/vm_unittest.cpp \
+     $(LOCAL_DIR)/vmm.cpp \
+ 
++
+ include make/module.mk
+diff --git a/kernel/kernel/vm/vm.cpp b/kernel/kernel/vm/vm.cpp
+index f5314b9..5c448d2 100644
+--- a/kernel/kernel/vm/vm.cpp
++++ b/kernel/kernel/vm/vm.cpp
+@@ -17,11 +17,13 @@
+ #include <kernel/vm/pmm.h>
+ #include <kernel/vm/vm_aspace.h>
+ #include <lib/console.h>
++#include <lib/mxkasan.h>
+ #include <lk/init.h>
+ #include <string.h>
+ #include <trace.h>
+ 
+-#define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
++#define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)  
++//#define LOCAL_TRACE 1
+ 
+ extern int _start;
+ extern int _end;
+@@ -35,6 +37,7 @@ extern int __data_end;
+ extern int __bss_start;
+ extern int __bss_end;
+ 
++
+ // boot time allocated page full of zeros
+ vm_page_t* zero_page;
+ paddr_t zero_page_paddr;
+@@ -178,6 +181,12 @@ void vm_init_postheap(uint level) {
+             .size = ROUNDUP(boot_alloc_end - boot_alloc_start, PAGE_SIZE),
+             .arch_mmu_flags = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
+         },
++        {
++            .name = "mxkasan_shadow",
++            .base = (vaddr_t)MXKASAN_SHADOW_OFFSET,
++            .size = ROUNDUP(MXKASAN_SHADOW_SIZE, PAGE_SIZE),
++            .arch_mmu_flags = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
++        }
+     };
+ 
+     for (uint i = 0; i < countof(regions); ++i) {
+diff --git a/kernel/kernel/vm/vm_address_region.cpp b/kernel/kernel/vm/vm_address_region.cpp
+index 191b24a..f987eea 100644
+--- a/kernel/kernel/vm/vm_address_region.cpp
++++ b/kernel/kernel/vm/vm_address_region.cpp
+@@ -225,6 +225,16 @@ status_t VmAddressRegion::CreateSubVmar(size_t offset, size_t size, uint8_t alig
+     return MX_OK;
+ }
+ 
++mxtl::RefPtr<VmMapping> VmAddressRegion::GetShadowVmMapping() {
++    return shadow_vmm_;
++}
++
++status_t VmAddressRegion::SetShadowVmMapping(mxtl::RefPtr<VmMapping> shadow_vmm) {
++    LTRACEF("Setting the shadow VM mapping\n");
++    shadow_vmm_ = shadow_vmm;
++    return MX_OK;
++}
++
+ status_t VmAddressRegion::CreateVmMapping(size_t mapping_offset, size_t size, uint8_t align_pow2,
+                                           uint32_t vmar_flags, mxtl::RefPtr<VmObject> vmo,
+                                           uint64_t vmo_offset, uint arch_mmu_flags, const char* name,
+diff --git a/kernel/kernel/vm/vm_aspace.cpp b/kernel/kernel/vm/vm_aspace.cpp
+index 29035d5..3c535fa 100644
+--- a/kernel/kernel/vm/vm_aspace.cpp
++++ b/kernel/kernel/vm/vm_aspace.cpp
+@@ -33,6 +33,8 @@
+ #include <lib/vdso.h>
+ #endif
+ 
++
++//#define LOCAL_TRACE 1
+ #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
+ 
+ // pointer to a singleton kernel address space
+@@ -226,6 +228,12 @@ mxtl::RefPtr<VmAddressRegion> VmAspace::RootVmar() {
+     return mxtl::move(ref);
+ }
+ 
++mxtl::RefPtr<VmAddressRegion> VmAspace::RootVmarLocked() {
++    mxtl::RefPtr<VmAddressRegion> ref(root_vmar_);
++    return mxtl::move(ref);
++}
++
++
+ status_t VmAspace::Destroy() {
+     canary_.Assert();
+     LTRACEF("%p '%s'\n", this, name_);
+@@ -271,7 +279,7 @@ __WEAK vaddr_t arch_mmu_pick_spot(const arch_aspace_t* aspace,
+ 
+ status_t VmAspace::MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* name, uint64_t offset,
+                                      size_t size, void** ptr, uint8_t align_pow2, uint vmm_flags,
+-                                     uint arch_mmu_flags) {
++                                     uint arch_mmu_flags, bool shadow) {
+ 
+     canary_.Assert();
+     LTRACEF("aspace %p name '%s' vmo %p, offset %#" PRIx64 " size %#zx "
+@@ -319,9 +327,18 @@ status_t VmAspace::MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* nam
+     status_t status = RootVmar()->CreateVmMapping(vmar_offset, size, align_pow2,
+                                                   vmar_flags,
+                                                   vmo, offset, arch_mmu_flags, name, &r);
++
+     if (status != MX_OK) {
+         return status;
+     }
++    // this is the shadow vm mapping
++    if (shadow) {
++        status_t status = RootVmar()->SetShadowVmMapping(r);
++
++        if (status != MX_OK) {
++             return status;
++        }
++    }    
+ 
+     // if we're committing it, map the region now
+     if (vmm_flags & VMM_FLAG_COMMIT) {
+@@ -344,6 +361,11 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
+     DEBUG_ASSERT(IS_PAGE_ALIGNED(vaddr));
+     DEBUG_ASSERT(IS_PAGE_ALIGNED(size));
+ 
++    bool shadow = false;
++    if (strcmp(name, "mxkasan_shadow") == 0) {
++        shadow = true;
++    }
++
+     size = ROUNDUP_PAGE_SIZE(size);
+     if (size == 0)
+         return MX_OK;
+@@ -357,7 +379,20 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
+ 
+     // allocate a zero length vm object to back it
+     // TODO: decide if a null vmo object is worth it
+-    auto vmo = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, 0);
++
++    // for mxkasan, we pass in the size so that pages 
++    // can be faulted in as things go, if necessary 
++    mxtl::RefPtr<VmObject> vmo;
++    if (shadow) {
++        shadow_vmo_ = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, size);
++        vmo = shadow_vmo_;
++        vmo->SetShadow();
++
++        const char* shadow_name = "mxkasan shadow";
++        vmo->set_name(shadow_name,strlen(shadow_name));
++    }
++    else 
++        vmo = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, 0);
+     if (!vmo)
+         return MX_ERR_NO_MEMORY;
+ 
+@@ -372,7 +407,7 @@ status_t VmAspace::ReserveSpace(const char* name, size_t size, vaddr_t vaddr) {
+     // map it, creating a new region
+     void* ptr = reinterpret_cast<void*>(vaddr);
+     return MapObjectInternal(mxtl::move(vmo), name, 0, size, &ptr, 0, VMM_FLAG_VALLOC_SPECIFIC,
+-                             arch_mmu_flags);
++                             arch_mmu_flags, shadow);
+ }
+ 
+ status_t VmAspace::AllocPhysical(const char* name, size_t size, void** ptr, uint8_t align_pow2,
+@@ -405,7 +440,7 @@ status_t VmAspace::AllocPhysical(const char* name, size_t size, void** ptr, uint
+ 
+     arch_mmu_flags &= ~ARCH_MMU_FLAG_CACHE_MASK;
+     return MapObjectInternal(mxtl::move(vmo), name, 0, size, ptr, align_pow2, vmm_flags,
+-                     arch_mmu_flags);
++                     arch_mmu_flags, false);
+ }
+ 
+ status_t VmAspace::AllocContiguous(const char* name, size_t size, void** ptr, uint8_t align_pow2,
+@@ -439,7 +474,7 @@ status_t VmAspace::AllocContiguous(const char* name, size_t size, void** ptr, ui
+     }
+ 
+     return MapObjectInternal(mxtl::move(vmo), name, 0, size, ptr, align_pow2, vmm_flags,
+-                     arch_mmu_flags);
++                     arch_mmu_flags, false);
+ }
+ 
+ status_t VmAspace::Alloc(const char* name, size_t size, void** ptr, uint8_t align_pow2,
+@@ -473,7 +508,7 @@ status_t VmAspace::Alloc(const char* name, size_t size, void** ptr, uint8_t alig
+ 
+     // map it, creating a new region
+     return MapObjectInternal(mxtl::move(vmo), name, 0, size, ptr, align_pow2, vmm_flags,
+-                     arch_mmu_flags);
++                     arch_mmu_flags, false);
+ }
+ 
+ status_t VmAspace::FreeRegion(vaddr_t va) {
+@@ -526,7 +561,7 @@ status_t VmAspace::PageFault(vaddr_t va, uint flags) {
+     // for now, hold the aspace lock across the page fault operation,
+     // which stops any other operations on the address space from moving
+     // the region out from underneath it
+-    AutoLock a(&lock_);
++    AutoLock a(&lock_); 
+ 
+     return root_vmar_->PageFault(va, flags);
+ }
+diff --git a/kernel/kernel/vm/vm_mapping.cpp b/kernel/kernel/vm/vm_mapping.cpp
+index 2718289..a4ea57b 100644
+--- a/kernel/kernel/vm/vm_mapping.cpp
++++ b/kernel/kernel/vm/vm_mapping.cpp
+@@ -19,8 +19,10 @@
+ #include <mxtl/auto_lock.h>
+ #include <safeint/safe_math.h>
+ #include <trace.h>
++#include <lib/mxkasan.h>
+ 
+ #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
++//#define LOCAL_TRACE 2
+ 
+ VmMapping::VmMapping(VmAddressRegion& parent, vaddr_t base, size_t size, uint32_t vmar_flags,
+                      mxtl::RefPtr<VmObject> vmo, uint64_t vmo_offset, uint arch_mmu_flags)
+@@ -370,18 +372,24 @@ status_t VmMapping::UnmapVmoRangeLocked(uint64_t offset, uint64_t len) const {
+     return MX_OK;
+ }
+ 
+-status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
+-    canary_.Assert();
++status_t VmMapping::MapRangeLocked(size_t offset, size_t len, bool commit) {
+ 
+     len = ROUNDUP(len, PAGE_SIZE);
+     if (len == 0) {
+         return MX_ERR_INVALID_ARGS;
+     }
+ 
+-    AutoLock guard(aspace_->lock());
+     if (state_ != LifeCycleState::ALIVE) {
+         return MX_ERR_BAD_STATE;
+     }
++    // avoid recursion due to mxkasan
++
++    if (currently_mapping_) {
++        return MX_ERR_BAD_STATE;
++    }
++
++    currently_mapping_ = true;
++    auto ac_mxkasan = mxtl::MakeAutoCall([&]() { currently_mapping_ = false; });
+ 
+     LTRACEF("region %p, offset %#zx, size %#zx, commit %d\n", this, offset, len, commit);
+ 
+@@ -432,11 +440,26 @@ status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
+         if (ret < 0) {
+             TRACEF("error %d mapping page at va %#" PRIxPTR " pa %#" PRIxPTR "\n", ret, va, pa);
+         }
+-
++        LTRACEF_LEVEL(2, "mapped: %zu", mapped);
++    
+         DEBUG_ASSERT(mapped == 1);
+     }
+ 
+     return MX_OK;
++}   
++
++status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
++    canary_.Assert();
++
++    len = ROUNDUP(len, PAGE_SIZE);
++    if (len == 0) {
++        return MX_ERR_INVALID_ARGS;
++    }
++
++    AutoLock guard(aspace_->lock());
++
++    return MapRangeLocked(offset, len, commit);
++
+ }
+ 
+ status_t VmMapping::DecommitRange(size_t offset, size_t len,
+@@ -509,11 +532,14 @@ status_t VmMapping::DestroyLocked() {
+ 
+ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
+     canary_.Assert();
+-    DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
++    //DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
+ 
+     DEBUG_ASSERT(va >= base_ && va <= base_ + size_ - 1);
+ 
+     va = ROUNDDOWN(va, PAGE_SIZE);
++
++    //bool is_shadow = is_shadow_addr(va); 
++
+     uint64_t vmo_offset = va - base_ + object_offset_;
+ 
+     __UNUSED char pf_string[5];
+@@ -552,7 +578,10 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
+     // fault in or grab an existing page
+     paddr_t new_pa;
+     vm_page_t* page;
+-    status_t status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
++    status_t status;
++
++    status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
++
+     if (status < 0) {
+         TRACEF("ERROR: failed to fault in or grab existing page\n");
+         TRACEF("%p vmo_offset %#" PRIx64 ", pf_flags %#x\n", this, vmo_offset, pf_flags);
+diff --git a/kernel/kernel/vm/vm_object_paged.cpp b/kernel/kernel/vm/vm_object_paged.cpp
+index a8f3285..2b5ed16 100644
+--- a/kernel/kernel/vm/vm_object_paged.cpp
++++ b/kernel/kernel/vm/vm_object_paged.cpp
+@@ -25,6 +25,7 @@
+ #include <trace.h>
+ 
+ #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
++//#define LOCAL_TRACE 2
+ 
+ namespace {
+ 
+@@ -149,12 +150,17 @@ size_t VmObjectPaged::AllocatedPagesInRange(uint64_t offset, uint64_t len) const
+     size_t count = 0;
+     // TODO: Figure out what to do with our parent's pages. If we're a clone,
+     // page_list_ only contains pages that we've made copies of.
+-    page_list_.ForEveryPage(
+-        [&count, offset, new_len](const auto p, uint64_t off) {
+-            if (off >= offset && off < offset + new_len) {
+-                count++;
+-            }
+-        });
++    if(!is_shadow_) {
++        page_list_.ForEveryPage(
++            [&count, offset, new_len](const auto p, uint64_t off) {
++                if (off >= offset && off < offset + new_len) {
++                    count++;
++                }
++            });
++        }
++    else {
++         count = shadow_pages_counter_;
++    }
+     return count;
+ }
+ 
+@@ -175,7 +181,16 @@ status_t VmObjectPaged::AddPageLocked(vm_page_t* p, uint64_t offset) {
+     if (offset >= size_)
+         return MX_ERR_OUT_OF_RANGE;
+ 
+-    status_t err = page_list_.AddPage(p, offset);
++    status_t err;
++    if (!is_shadow_) {
++        err = page_list_.AddPage(p, offset);
++    } 
++    else {
++    // Do some book keeping of the allocated pages for shadow
++        shadow_pages_counter_ += 1;
++        err = MX_OK;
++    }
++
+     if (err != MX_OK)
+         return err;
+ 
+@@ -234,6 +249,12 @@ mxtl::RefPtr<VmObject> VmObjectPaged::CreateFromROData(const void* data, size_t
+     return vmo;
+ }
+ 
++status_t VmObjectPaged::SetShadow() {
++    is_shadow_ = true;
++
++    return MX_OK;
++}
++
+ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t** const page_out, paddr_t* const pa_out) {
+     canary_.Assert();
+     DEBUG_ASSERT(lock_.IsHeld());
+@@ -339,6 +360,7 @@ status_t VmObjectPaged::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t*
+     // TODO: remove once pmm returns zeroed pages
+     ZeroPage(pa);
+ 
++    // TODO: revise that the other getpage function for mxkasan is needed or not
+     status_t status = AddPageLocked(p, offset);
+     DEBUG_ASSERT(status == MX_OK);
+ 
+diff --git a/kernel/kernel/vm/vm_unittest.cpp b/kernel/kernel/vm/vm_unittest.cpp
+index 3f24171..62e5df5 100644
+--- a/kernel/kernel/vm/vm_unittest.cpp
++++ b/kernel/kernel/vm/vm_unittest.cpp
+@@ -377,7 +377,7 @@ static bool vmo_precommitted_map_test(void* context) {
+     auto ka = VmAspace::kernel_aspace();
+     void* ptr;
+     auto ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
+-                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
++                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
+     EXPECT_EQ(MX_OK, ret, "mapping object");
+ 
+     // fill with known pattern and test
+@@ -399,7 +399,7 @@ static bool vmo_demand_paged_map_test(void* context) {
+     auto ka = VmAspace::kernel_aspace();
+     void* ptr;
+     auto ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
+-                             0, 0, kArchRwFlags);
++                             0, 0, kArchRwFlags, false);
+     EXPECT_EQ(ret, MX_OK, "mapping object");
+ 
+     // fill with known pattern and test
+@@ -421,7 +421,7 @@ static bool vmo_dropped_ref_test(void* context) {
+     auto ka = VmAspace::kernel_aspace();
+     void* ptr;
+     auto ret = ka->MapObjectInternal(mxtl::move(vmo), "test", 0, alloc_size, &ptr,
+-                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
++                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
+     EXPECT_EQ(ret, MX_OK, "mapping object");
+ 
+     EXPECT_NULL(vmo, "dropped ref to object");
+@@ -446,7 +446,7 @@ static bool vmo_remap_test(void* context) {
+     auto ka = VmAspace::kernel_aspace();
+     void* ptr;
+     auto ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
+-                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
++                             0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
+     EXPECT_EQ(MX_OK, ret, "mapping object");
+ 
+     // fill with known pattern and test
+@@ -458,7 +458,7 @@ static bool vmo_remap_test(void* context) {
+ 
+     // map it again
+     ret = ka->MapObjectInternal(vmo, "test", 0, alloc_size, &ptr,
+-                        0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags);
++                        0, VmAspace::VMM_FLAG_COMMIT, kArchRwFlags, false);
+     EXPECT_EQ(ret, MX_OK, "mapping object");
+ 
+     // test that the pattern is still valid
+@@ -481,7 +481,7 @@ static bool vmo_double_remap_test(void* context) {
+     auto ka = VmAspace::kernel_aspace();
+     void* ptr;
+     auto ret = ka->MapObjectInternal(vmo, "test0", 0, alloc_size, &ptr,
+-                             0, 0, kArchRwFlags);
++                             0, 0, kArchRwFlags, false);
+     EXPECT_EQ(MX_OK, ret, "mapping object");
+ 
+     // fill with known pattern and test
+@@ -491,7 +491,7 @@ static bool vmo_double_remap_test(void* context) {
+     // map it again
+     void* ptr2;
+     ret = ka->MapObjectInternal(vmo, "test1", 0, alloc_size, &ptr2,
+-                        0, 0, kArchRwFlags);
++                        0, 0, kArchRwFlags, false);
+     EXPECT_EQ(ret, MX_OK, "mapping object second time");
+     EXPECT_NEQ(ptr, ptr2, "second mapping is different");
+ 
+@@ -503,7 +503,7 @@ static bool vmo_double_remap_test(void* context) {
+     void* ptr3;
+     static const size_t alloc_offset = PAGE_SIZE;
+     ret = ka->MapObjectInternal(vmo, "test2", alloc_offset, alloc_size - alloc_offset,
+-                        &ptr3, 0, 0, kArchRwFlags);
++                        &ptr3, 0, 0, kArchRwFlags, false);
+     EXPECT_EQ(ret, MX_OK, "mapping object third time");
+     EXPECT_NEQ(ptr3, ptr2, "third mapping is different");
+     EXPECT_NEQ(ptr3, ptr, "third mapping is different");
+@@ -575,7 +575,7 @@ static bool vmo_read_write_smoke_test(void* context) {
+     auto ka = VmAspace::kernel_aspace();
+     uint8_t* ptr;
+     err = ka->MapObjectInternal(vmo, "test", 0, alloc_size, (void**)&ptr,
+-                        0, 0, kArchRwFlags);
++                        0, 0, kArchRwFlags, false);
+     EXPECT_EQ(MX_OK, err, "mapping object");
+ 
+     // write to it at odd offsets
+@@ -671,13 +671,13 @@ bool vmo_cache_test(void* context) {
+         auto vmo = VmObjectPhysical::Create(pa, PAGE_SIZE);
+         EXPECT_TRUE(vmo, "");
+         EXPECT_EQ(MX_OK, ka->MapObjectInternal(vmo, "test", 0, PAGE_SIZE, (void**)&ptr, 0, 0,
+-                  kArchRwFlags), "map vmo");
++                  kArchRwFlags, false), "map vmo");
+         EXPECT_EQ(MX_ERR_BAD_STATE, vmo->SetMappingCachePolicy(cache_policy),
+                   "set flags while mapped");
+         EXPECT_EQ(MX_OK, ka->FreeRegion((vaddr_t)ptr), "unmap vmo");
+         EXPECT_EQ(MX_OK, vmo->SetMappingCachePolicy(cache_policy), "set flags after unmapping");
+         EXPECT_EQ(MX_OK, ka->MapObjectInternal(vmo, "test", 0, PAGE_SIZE, (void**)&ptr, 0, 0,
+-                  kArchRwFlags), "map vmo again");
++                  kArchRwFlags, false), "map vmo again");
+         EXPECT_EQ(MX_OK, ka->FreeRegion((vaddr_t)ptr), "unmap vmo");
+     }
+ 
+diff --git a/kernel/lib/console/rules.mk b/kernel/lib/console/rules.mk
+index c67b82a..5e80ab4 100644
+--- a/kernel/lib/console/rules.mk
++++ b/kernel/lib/console/rules.mk
+@@ -12,4 +12,5 @@ MODULE := $(LOCAL_DIR)
+ MODULE_SRCS += \
+ 	$(LOCAL_DIR)/console.c
+ 
++
+ include make/module.mk
+diff --git a/kernel/lib/debugcommands/debugcommands.cpp b/kernel/lib/debugcommands/debugcommands.cpp
+index ef22245..95f6dac 100644
+--- a/kernel/lib/debugcommands/debugcommands.cpp
++++ b/kernel/lib/debugcommands/debugcommands.cpp
+@@ -343,9 +343,9 @@ static int cmd_crash(int argc, const cmd_args *argv, uint32_t flags)
+ static int cmd_stackstomp(int argc, const cmd_args *argv, uint32_t flags)
+ {
+     for (size_t i = 0; i < DEFAULT_STACK_SIZE * 2; i++) {
+-        uint8_t death[i];
+-
+-        memset(death, 0xaa, i);
++        //uint8_t death[i];
++        // remove memset for the time being to see if it causes the error
++        //memset(death, 0xaa, i);
+         thread_sleep_relative(LK_USEC(1));
+     }
+ 
+diff --git a/kernel/lib/heap/cmpctmalloc/cmpctmalloc.c b/kernel/lib/heap/cmpctmalloc/cmpctmalloc.c
+index 9307378..3aa3648 100644
+--- a/kernel/lib/heap/cmpctmalloc/cmpctmalloc.c
++++ b/kernel/lib/heap/cmpctmalloc/cmpctmalloc.c
+@@ -19,6 +19,7 @@
+ #include <lib/cmpctmalloc.h>
+ #include <lib/heap.h>
+ #include <platform.h>
++#include <lib/mxkasan.h>
+ 
+ // Malloc implementation tuned for space.
+ //
+@@ -85,7 +86,7 @@ struct heap {
+ // Heap static vars.
+ static struct heap theheap;
+ 
+-static ssize_t heap_grow(size_t len, free_t **bucket);
++static ssize_t heap_grow(size_t len, free_t **bucket, bool init);
+ 
+ static void lock(void) TA_ACQ(theheap.lock)
+ {
+@@ -653,7 +654,7 @@ static void *large_alloc(size_t size)
+     size = ROUNDUP(size, 8);
+     free_t *free_area = NULL;
+     lock();
+-    if (heap_grow(size, &free_area) < 0) {
++    if (heap_grow(size, &free_area, false) < 0) {
+         unlock();
+         return NULL;
+     }
+@@ -764,7 +765,7 @@ void *cmpct_alloc(size_t size)
+         size_t growby = MIN(1u << HEAP_ALLOC_VIRTUAL_BITS,
+                             MAX(theheap.size >> 3,
+                                 MAX(HEAP_GROW_SIZE, rounded_up)));
+-        while (heap_grow(growby, NULL) < 0) {
++        while (heap_grow(growby, NULL, false) < 0) {
+             if (growby <= rounded_up) {
+                 unlock();
+                 return NULL;
+@@ -798,6 +799,9 @@ void *cmpct_alloc(size_t size)
+     memset(((char *)result) + size, PADDING_FILL, rounded_up - size - sizeof(header_t));
+ #endif
+     unlock();
++
++    mxkasan_unpoison_shadow(result, size);
++
+     return result;
+ }
+ 
+@@ -865,6 +869,9 @@ void cmpct_free(void *payload)
+             free_memory(header, left, size);
+         }
+     }
++
++    mxkasan_poison_shadow(payload, size, MXKASAN_FREE_PAGE );
++
+     unlock();
+ }
+ 
+@@ -895,7 +902,7 @@ static void add_to_heap(void *new_area, size_t size, free_t **bucket)
+ 
+ // Create a new free-list entry of at least size bytes (including the
+ // allocation header).  Called with the lock, apart from during init.
+-static ssize_t heap_grow(size_t size, free_t **bucket)
++static ssize_t heap_grow(size_t size, free_t **bucket, bool init) TA_NO_THREAD_SAFETY_ANALYSIS
+ {
+     // The new free list entry will have a header on each side (the
+     // sentinels) so we need to grow the gross heap size by this much more.
+@@ -903,9 +910,15 @@ static ssize_t heap_grow(size_t size, free_t **bucket)
+     size = ROUNDUP(size, PAGE_SIZE);
+ 
+     void *ptr = heap_page_alloc(size >> PAGE_SIZE_SHIFT);
++
+     if (ptr == NULL)
+         return MX_ERR_NO_MEMORY;
+ 
++    
++    mxkasan_init_heap_ptr = ptr;
++    mxkasan_init_heap_size = size;
++
++
+     theheap.size += size;
+ 
+     LTRACEF("growing heap by 0x%zx bytes, new ptr %p\n", size, ptr);
+@@ -933,5 +946,5 @@ void cmpct_init(void)
+ 
+     theheap.remaining = 0;
+ 
+-    heap_grow(initial_alloc, NULL);
++    heap_grow(initial_alloc, NULL, true);
+ }
+diff --git a/kernel/lib/heap/heap_wrapper.cpp b/kernel/lib/heap/heap_wrapper.cpp
+index 282e71f..53595e4 100644
+--- a/kernel/lib/heap/heap_wrapper.cpp
++++ b/kernel/lib/heap/heap_wrapper.cpp
+@@ -20,6 +20,7 @@
+ #include <kernel/vm/pmm.h>
+ #include <lib/cmpctmalloc.h>
+ #include <lib/console.h>
++#include <lib/mxkasan.h>
+ 
+ #define LOCAL_TRACE 0
+ 
+@@ -38,6 +39,7 @@ static bool heap_trace = false;
+ #define heap_trace (false)
+ #endif
+ 
++
+ void heap_init(void)
+ {
+     cmpct_init();
+@@ -147,6 +149,7 @@ void *heap_page_alloc(size_t pages)
+     struct list_node list = LIST_INITIAL_VALUE(list);
+ 
+     void *result = pmm_alloc_kpages(pages, &list, NULL);
++    mxkasan_alloc_pages((uint8_t*)result, pages);
+ 
+     if (likely(result)) {
+         // mark all of the allocated page as HEAP
+@@ -163,7 +166,8 @@ void heap_page_free(void *ptr, size_t pages)
+ {
+     DEBUG_ASSERT(IS_PAGE_ALIGNED((uintptr_t)ptr));
+     DEBUG_ASSERT(pages > 0);
+-
++    
++    mxkasan_free_pages((uint8_t*)ptr, pages);
+     pmm_free_kpages(ptr, pages);
+ }
+ 
+diff --git a/kernel/lib/heap/include/lib/heap.h b/kernel/lib/heap/include/lib/heap.h
+index 91a2663..8c6c6b9 100644
+--- a/kernel/lib/heap/include/lib/heap.h
++++ b/kernel/lib/heap/include/lib/heap.h
+@@ -34,4 +34,5 @@ void heap_page_free(void *ptr, size_t pages);
+  */
+ void heap_get_info(size_t *size_bytes, size_t *free_bytes);
+ 
++
+ __END_CDECLS
+diff --git a/kernel/lib/heap/rules.mk b/kernel/lib/heap/rules.mk
+index 5f48597..c6cda40 100644
+--- a/kernel/lib/heap/rules.mk
++++ b/kernel/lib/heap/rules.mk
+@@ -15,6 +15,8 @@ MODULE_SRCS += \
+ 	$(LOCAL_DIR)/heap_wrapper.cpp
+ 
+ # use the cmpctmalloc heap implementation
+-MODULE_DEPS := kernel/lib/heap/cmpctmalloc
++# and use mxkasan as well
++MODULE_DEPS := kernel/lib/heap/cmpctmalloc \
++               kernel/lib/mxkasan \
+ 
+ include make/module.mk
+diff --git a/kernel/lib/ktrace/ktrace.cpp b/kernel/lib/ktrace/ktrace.cpp
+index 98d8755..b4caac4 100644
+--- a/kernel/lib/ktrace/ktrace.cpp
++++ b/kernel/lib/ktrace/ktrace.cpp
+@@ -193,6 +193,7 @@ void ktrace_init(unsigned level) {
+     ktrace_state_t* ks = &KTRACE_STATE;
+ 
+     uint32_t mb = cmdline_get_uint32("ktrace.bufsize", KTRACE_DEFAULT_BUFSIZE);
++    mb = 0; // hack
+     uint32_t grpmask = cmdline_get_uint32("ktrace.grpmask", KTRACE_DEFAULT_GRPMASK);
+ 
+     if (mb == 0) {
+diff --git a/kernel/lib/mxkasan/include/lib/mxkasan.h b/kernel/lib/mxkasan/include/lib/mxkasan.h
+new file mode 100644
+index 0000000..cdfd814
+--- /dev/null
++++ b/kernel/lib/mxkasan/include/lib/mxkasan.h
+@@ -0,0 +1,160 @@
++// Copyright 2017 Attila Szasz
++//
++//
++// Use of this source code is governed by a MIT-style
++// license that can be found in the LICENSE file or at
++// https://opensource.org/licenses/MIT
++
++#include <inttypes.h>
++#include <ctype.h>
++#include <stdlib.h>
++#include <stdbool.h>
++#include <kernel/thread.h>
++
++
++#define MXKASAN_SHADOW_SCALE_SHIFT 3
++// These are architecture specific now
++// #define MXKASAN_SHADOW_OFFSET 0xffffde0000000000
++// #define MXKASAN_SHADOW_START  0xffff000000000000
++
++// #define MXKASAN_SHADOW_SIZE 0x100000000000
++#define MXKASAN_SHADOW_SCALE_SIZE (1UL << MXKASAN_SHADOW_SCALE_SHIFT)
++#define MXKASAN_SHADOW_MASK       (MXKASAN_SHADOW_SCALE_SIZE - 1)
++
++#define MXKASAN_FREE_PAGE         0xFF  /* page was freed */
++#define MXKASAN_SHADOW_GAP        0xF9  /* address belongs to shadow memory */
++#define MXKASAN_REDZONE   	  0xFC  /* full page redzone */
++#define MXKASAN_MALLOC_FREE       0xFB  /* object was freed */
++
++// TODO: do this properly
++#define BITS_PER_LONG 64
++
++#define __alias(symbol)	__attribute__((weak, alias(#symbol)))
++
++#define _RET_IP_		(unsigned long)__builtin_return_address(0)
++
++struct mxkasan_access_info {
++	const uint8_t *access_addr;
++	const uint8_t *first_bad_addr;
++	size_t access_size;
++	bool is_write;
++	unsigned long ip;
++};
++
++struct mxkasan_pending_alloc {
++	const uint8_t* start; 
++	const uint8_t* end;
++};
++
++// Test function declarations
++
++void malloc_oob_right(void);
++
++void malloc_oob_left(void);
++
++void malloc_uaf(void);
++
++void mxkasan_global_oob(void);
++
++
++__BEGIN_CDECLS
++
++extern bool mxkasan_initialized;
++extern void* mxkasan_init_heap_ptr;
++extern size_t mxkasan_init_heap_size;
++
++void mxkasan_report_error(struct mxkasan_access_info *info);
++void mxkasan_report_user_access(struct mxkasan_access_info *info);
++void mxkasan_report(unsigned long addr, size_t size,
++		bool is_write, unsigned long ip);
++
++void mxkasan_init(void);
++void mxkasan_poison_shadow(const uint8_t *address, size_t size, u8 value);
++void mxkasan_unpoison_shadow(const uint8_t *address, size_t size);
++void mxkasan_tests(void);
++
++void mxkasan_alloc_pages(const uint8_t* addr, size_t pages);
++void mxkasan_free_pages(const uint8_t* addr, size_t pages);
++
++void __asan_loadN(unsigned long addr, size_t size);
++void __asan_load1(unsigned long addr);
++void __asan_load2(unsigned long addr);	
++void __asan_load4(unsigned long addr);	
++void __asan_load8(unsigned long addr);	
++void __asan_load16(unsigned long addr);	
++
++void __asan_storeN(unsigned long addr, size_t size);
++void __asan_store1(unsigned long addr);
++void __asan_store2(unsigned long addr);
++void __asan_store4(unsigned long addr);
++void __asan_store8(unsigned long addr);
++void __asan_store16(unsigned long addr);
++
++void __asan_handle_no_return(void);
++
++#define DEFINE_ASAN_REPORT_LOAD_DEC(size)                     \
++void __asan_report_load##size##_noabort(unsigned long addr); \
++
++#define DEFINE_ASAN_REPORT_STORE_DEC(size)                     \
++void __asan_report_store##size##_noabort(unsigned long addr); \
++
++DEFINE_ASAN_REPORT_LOAD_DEC(1);
++DEFINE_ASAN_REPORT_LOAD_DEC(2);
++DEFINE_ASAN_REPORT_LOAD_DEC(4);
++DEFINE_ASAN_REPORT_LOAD_DEC(8);
++DEFINE_ASAN_REPORT_LOAD_DEC(16);
++DEFINE_ASAN_REPORT_STORE_DEC(1);
++DEFINE_ASAN_REPORT_STORE_DEC(2);
++DEFINE_ASAN_REPORT_STORE_DEC(4);
++DEFINE_ASAN_REPORT_STORE_DEC(8);
++DEFINE_ASAN_REPORT_STORE_DEC(16);
++
++void __asan_report_load_n_noabort(unsigned long addr, size_t size);
++void __asan_report_store_n_noabort(unsigned long addr, size_t size);
++
++__END_CDECLS
++
++inline bool is_shadow_addr(vaddr_t va) {
++	if ((MXKASAN_SHADOW_OFFSET <= va) && 
++	   (va <= (MXKASAN_SHADOW_OFFSET +MXKASAN_SHADOW_SIZE))) {
++	       return true;
++	   }
++	else 
++	   return false;
++}
++
++static inline uint8_t* mxkasan_mem_to_shadow(const uint8_t* addr)
++{
++	unsigned long address = (unsigned long)addr - MXKASAN_SHADOW_START;
++	return (uint8_t*)((unsigned long)address >> MXKASAN_SHADOW_SCALE_SHIFT)
++		+ MXKASAN_SHADOW_OFFSET;
++}
++
++static inline const void *mxkasan_shadow_to_mem(const void *shadow_addr)
++{
++	unsigned long address = ((unsigned long)shadow_addr - MXKASAN_SHADOW_OFFSET)
++		<< MXKASAN_SHADOW_SCALE_SHIFT;
++	address = address + MXKASAN_SHADOW_START;
++	return (void*) address;
++}
++
++/* Enable reporting bugs after kasan_disable_current() */
++static inline void mxkasan_enable_current(void)
++{
++	thread_t* current = get_current_thread();
++	current->mxkasan_depth++;
++}
++
++/* Disable reporting bugs for current task */
++static inline void mxkasan_disable_current(void)
++{
++	thread_t* current = get_current_thread();
++	current->mxkasan_depth--;
++}
++
++static inline bool mxkasan_enabled(void)
++{
++	thread_t* current = get_current_thread();
++	return !current->mxkasan_depth;
++}
++
+diff --git a/kernel/lib/mxkasan/mxkasan.cpp b/kernel/lib/mxkasan/mxkasan.cpp
+new file mode 100644
+index 0000000..8a2697e
+--- /dev/null
++++ b/kernel/lib/mxkasan/mxkasan.cpp
+@@ -0,0 +1,412 @@
++// Copyright 2017 Attila Szasz
++//
++//
++// Use of this source code is governed by a MIT-style
++// license that can be found in the LICENSE file or at
++// https://opensource.org/licenses/MIT
++
++#include <ctype.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <inttypes.h>
++#include <lib/mxkasan.h>
++#include <kernel/vm/vm_aspace.h>
++
++mutex_t mxkasan_lock = MUTEX_INITIAL_VALUE(mxkasan_lock);
++
++bool mxkasan_initialized;
++void* mxkasan_init_heap_ptr;
++size_t mxkasan_init_heap_size;
++
++struct mxkasan_pending_alloc pending_alloc[1024];
++size_t mxkasan_alloc_count = 0;
++
++void mxkasan_alloc_pages(const uint8_t *addr, size_t pages)
++{
++	if (unlikely(!mxkasan_initialized))
++		return;
++
++	if (likely(addr)) {
++		mxkasan_poison_shadow(addr, PAGE_SIZE * pages, MXKASAN_REDZONE);
++                printf("Poisoned page due to allocation at %p\n", addr);
++        }
++
++} 
++
++void mxkasan_free_pages(const uint8_t *addr, size_t pages)
++{
++	if (unlikely(!mxkasan_initialized))
++		return;
++
++	if (likely(addr))
++		mxkasan_poison_shadow(addr, PAGE_SIZE * pages , MXKASAN_FREE_PAGE);
++}
++
++void mxkasan_tests(void) {
++	printf("performing MXKASAN tests ...\n");
++	//mxkasan_global_oob();
++	malloc_uaf();
++	malloc_oob_left();
++	malloc_oob_right();
++	printf("... done.\n");
++}
++
++void mxkasan_init(void) {
++    mxkasan_initialized = true;
++
++    uint8_t* testptr = (uint8_t*) MXKASAN_SHADOW_OFFSET;
++
++    // Poisoning the initial hea
++    printf("Poisoning initial heap at %p - %p\n", mxkasan_init_heap_ptr, (uint8_t*) ((uint8_t*) mxkasan_init_heap_ptr + mxkasan_init_heap_size));
++    mxkasan_poison_shadow((uint8_t *)mxkasan_init_heap_ptr, (size_t)(mxkasan_init_heap_size), MXKASAN_REDZONE);
++
++    testptr += 0xdead;
++    printf("writing MXKASAN shadow memory at %#" PRIxPTR "\n", (unsigned long)testptr);
++
++    // This should result in a page fault 
++    *testptr = 0xaa;
++    printf("reading back value at %#" PRIxPTR ": %x\n", (unsigned long)testptr, *testptr);
++
++    printf("Unpoisoning pending allocations\n");
++    for (size_t current=0;current < mxkasan_alloc_count;current++) {
++        mxkasan_unpoison_shadow((uint8_t*)pending_alloc[current].start,
++                                /* size */
++                                (size_t)
++                                (pending_alloc[current].end - pending_alloc[current].start));
++    }
++
++    // Let's do some heap messaround
++    testptr = (uint8_t*) malloc(128);
++    *(testptr+129) = 0xde;   
++
++    mxkasan_tests();
++}
++
++bool is_page_mapped(uint8_t* va, VmAspace* kernel_aspace) {
++	uint page_flags;
++    paddr_t pa;
++    status_t err = arch_mmu_query(&kernel_aspace->arch_aspace(), (vaddr_t)va, &pa, &page_flags);
++    
++    if (err >= 0) 
++    	//printf( "%#" PRIxPTR " page mapped\n", (unsigned long)va);
++    	return true;
++    else
++    	//printf( "%#" PRIxPTR " page not mapped\n", (unsigned long)va);
++    	return false;
++}
++
++/*
++ * Poisons the shadow memory for 'size' bytes starting from 'addr'.
++ * Memory addresses should be aligned to KASAN_SHADOW_SCALE_SIZE.
++ */
++void mxkasan_poison_shadow(const uint8_t *address, size_t size, u8 value) {
++    if (unlikely(!mxkasan_initialized))
++		return;
++
++    uint8_t *shadow_start, *shadow_end;
++ 
++    shadow_start = mxkasan_mem_to_shadow(address);
++    shadow_end = mxkasan_mem_to_shadow(address + size);
++
++    AutoLock a(&mxkasan_lock);
++
++    // Mapping manually
++    VmAspace* kernel_aspace = VmAspace::kernel_aspace();
++    mxtl::RefPtr<VmMapping> shadow_vmm = kernel_aspace->RootVmarLocked()->GetShadowVmMapping();
++
++    status_t status = MX_OK;
++    if (!is_page_mapped(shadow_start, kernel_aspace))
++        status = shadow_vmm->PageFault((vaddr_t)shadow_start, 0x19);
++
++    // Let's be greedy and map the next page as well to prevent boundary problems
++    // status = shadow_vmm->PageFault((vaddr_t)(shadow_start + PAGE_SIZE), 0x19);
++
++    if (status != MX_OK) {
++    	printf("Poisoning unsuccessful at %#" PRIxPTR "\n", (unsigned long)address);
++        return;
++    }
++    memset(shadow_start, value, shadow_end - shadow_start);
++}
++
++void mxkasan_unpoison_shadow(const uint8_t *address, size_t size)
++{
++    if (unlikely(!mxkasan_initialized)) {
++        // If mxkasan is not initialized yet we have to keep track of
++        // allocations
++        //printf("Allocation before MXKASAN init: %p - %p\n", address, (address+size));
++        pending_alloc[mxkasan_alloc_count].start = address;
++        pending_alloc[mxkasan_alloc_count].end   = address+size;
++        mxkasan_alloc_count += 1;
++        return;
++    }
++	mxkasan_poison_shadow(address, size, 0);
++
++	if (size & MXKASAN_SHADOW_MASK) {
++		u8 *shadow = (u8 *)mxkasan_mem_to_shadow(address + size);
++
++		*shadow = size & MXKASAN_SHADOW_MASK;
++	}
++	
++}
++
++
++/*
++ * All functions below always inlined so compiler could
++ * perform better optimizations in each of __asan_loadX/__assn_storeX
++ * depending on memory access size X.
++ */
++
++static inline bool memory_is_poisoned_1(unsigned long addr)
++{
++	s8 shadow_value = *(s8 *)mxkasan_mem_to_shadow((uint8_t *)addr);
++	if (unlikely(shadow_value)) {
++		s8 last_accessible_byte = addr & MXKASAN_SHADOW_MASK;
++		return unlikely(last_accessible_byte >= shadow_value);
++	}
++
++	return false;
++}
++
++static inline bool memory_is_poisoned_2(unsigned long addr)
++{
++	u16 *shadow_addr = (u16 *)mxkasan_mem_to_shadow((uint8_t *)addr);
++
++	if (unlikely(*shadow_addr)) {
++		if (memory_is_poisoned_1(addr + 1))
++			return true;
++
++		if (likely(((addr + 1) & MXKASAN_SHADOW_MASK) != 0))
++			return false;
++
++		return unlikely(*(u8 *)shadow_addr);
++	}
++
++	return false;
++}
++
++static inline bool memory_is_poisoned_4(unsigned long addr)
++{
++	u16 *shadow_addr = (u16 *)mxkasan_mem_to_shadow((uint8_t *)addr);
++
++	if (unlikely(*shadow_addr)) {
++		if (memory_is_poisoned_1(addr + 3))
++			return true;
++
++		if (likely(((addr + 3) & MXKASAN_SHADOW_MASK) >= 3))
++			return false;
++
++		return unlikely(*(u8 *)shadow_addr);
++	}
++
++	return false;
++}
++
++static inline bool memory_is_poisoned_8(unsigned long addr)
++{
++	u16 *shadow_addr = (u16 *)mxkasan_mem_to_shadow((uint8_t *)addr);
++
++	if (unlikely(*shadow_addr)) {
++		if (memory_is_poisoned_1(addr + 7))
++			return true;
++
++		if (likely(((addr + 7) & MXKASAN_SHADOW_MASK) >= 7))
++			return false;
++
++		return unlikely(*(u8 *)shadow_addr);
++	}
++
++	return false;
++}
++
++static inline bool memory_is_poisoned_16(unsigned long addr)
++{
++	u32 *shadow_addr = (u32 *)mxkasan_mem_to_shadow((uint8_t *)addr);
++
++	if (unlikely(*shadow_addr)) {
++		u16 shadow_first_bytes = *(u16 *)shadow_addr;
++		s8 last_byte = (addr + 15) & MXKASAN_SHADOW_MASK;
++
++		if (unlikely(shadow_first_bytes))
++			return true;
++
++		if (likely(!last_byte))
++			return false;
++
++		return memory_is_poisoned_1(addr + 15);
++	}
++
++	return false;
++}
++
++
++static inline unsigned long bytes_is_zero(const u8 *start,
++					size_t size)
++{
++	while (size) {
++		if (unlikely(*start))
++			return (unsigned long)start;
++		start++;
++		size--;
++	}
++
++	return 0;
++}
++
++static inline unsigned long memory_is_zero(const uint8_t *start,
++						const uint8_t *end)
++{
++	unsigned int words;
++	unsigned long ret;
++	unsigned int prefix = (unsigned long)start % 8;
++
++	if (end - start <= 16)
++		return bytes_is_zero(start, end - start);
++
++	if (prefix) {
++		prefix = 8 - prefix;
++		ret = bytes_is_zero(start, prefix);
++		if (unlikely(ret))
++			return ret;
++		start += prefix;
++	}
++
++	words = (unsigned int)(end - start) / 8;
++	while (words) {
++		if (unlikely(*(u64 *)start))
++			return bytes_is_zero(start, 8);
++		start += 8;
++		words--;
++	}
++
++	return bytes_is_zero(start, (end - start) % 8);
++}
++
++static inline bool memory_is_poisoned_n(unsigned long addr,
++						size_t size)
++{
++	unsigned long ret;
++
++	ret = memory_is_zero(mxkasan_mem_to_shadow((uint8_t *)addr),
++			mxkasan_mem_to_shadow((uint8_t *)addr + size - 1) + 1);
++
++	if (unlikely(ret)) {
++		unsigned long last_byte = addr + size - 1;
++		s8 *last_shadow = (s8 *)mxkasan_mem_to_shadow((uint8_t *)last_byte);
++
++		if (unlikely(ret != (unsigned long)last_shadow ||
++			((last_byte & MXKASAN_SHADOW_MASK) >= (u8)*last_shadow)))
++			return true;
++	}
++	return false;
++}
++
++static inline bool memory_is_poisoned(unsigned long addr, size_t size)
++{
++//	if (__builtin_constant_p(size)) {
++//          ugly. meant to indicate that we are not relying on the
++//          memorz_is_poisoned_n function since these can be hardwired
++        if (true) {
++		switch (size) {
++		case 1:
++			return memory_is_poisoned_1(addr);
++		case 2:
++			return memory_is_poisoned_2(addr);
++		case 4:
++			return memory_is_poisoned_4(addr);
++		case 8:
++			return memory_is_poisoned_8(addr);
++		case 16:
++			return memory_is_poisoned_16(addr);
++		default:
++		//TODO static assertion here
++		    ;
++		}
++	}
++
++	return memory_is_poisoned_n(addr, size);
++}
++
++static inline void check_memory_region(unsigned long addr,
++						size_t size, bool write)
++{
++	struct mxkasan_access_info info;
++
++	if (unlikely(size == 0))
++		return;
++
++	if (unlikely((void *)addr <
++		mxkasan_shadow_to_mem((void *)MXKASAN_SHADOW_START))) {
++		info.access_addr = (uint8_t *)addr;
++		info.access_size = size;
++		info.is_write = write;
++		info.ip = _RET_IP_;
++		mxkasan_report_user_access(&info);
++		return;
++	}
++
++	if (likely(!memory_is_poisoned(addr, size)))
++		return;
++
++	mxkasan_report(addr, size, write, _RET_IP_);
++}
++
++__BEGIN_CDECLS
++/*
++#define DEFINE_ASAN_LOAD_STORE(size)				\
++	void __asan_load##size(unsigned long addr)		\
++	{							\
++		check_memory_region(addr, size, false);		\
++	}							\
++	void __asan_store##size(unsigned long addr)		\
++	{							\
++		check_memory_region(addr, size, true);		\
++	}							
++*/
++
++#define DEFINE_ASAN_LOAD_STORE(size)				\
++	void __asan_load##size(unsigned long addr)		\
++	{							\
++		check_memory_region(addr, size, false);		\
++	}							\
++		\
++	__alias(__asan_load##size)				\
++        void __asan_load##size##_noabort(unsigned long);        \
++	void __asan_store##size(unsigned long addr)		\
++	{							\
++		check_memory_region(addr, size, true);		\
++	}							\
++	__alias(__asan_store##size)				\
++        void __asan_store##size##_noabort(unsigned long);       \
++
++DEFINE_ASAN_LOAD_STORE(1);
++DEFINE_ASAN_LOAD_STORE(2);
++DEFINE_ASAN_LOAD_STORE(4);
++DEFINE_ASAN_LOAD_STORE(8);
++DEFINE_ASAN_LOAD_STORE(16);
++
++void __asan_loadN(unsigned long addr, size_t size)
++{
++	check_memory_region(addr, size, false);
++}
++
++
++__alias(__asan_loadN)
++void __asan_loadN_noabort(unsigned long, size_t);
++
++
++void __asan_storeN(unsigned long addr, size_t size)
++{
++	check_memory_region(addr, size, true);
++}
++
++
++__alias(__asan_storeN)
++void __asan_storeN_noabort(unsigned long, size_t);
++
++
++/* to shut up compiler complaints */
++void __asan_handle_no_return(void) {}
++
++__END_CDECLS
++
+diff --git a/kernel/lib/mxkasan/report.cpp b/kernel/lib/mxkasan/report.cpp
+new file mode 100644
+index 0000000..01a2340
+--- /dev/null
++++ b/kernel/lib/mxkasan/report.cpp
+@@ -0,0 +1,219 @@
++// Copyright 2017 Attila Szasz
++//
++//
++// Use of this source code is governed by a MIT-style
++// license that can be found in the LICENSE file or at
++// https://opensource.org/licenses/MIT
++
++#include <lib/mxkasan.h>
++#include <stdio.h>
++#include <inttypes.h>
++#include <kernel/spinlock.h>
++#include <kernel/thread.h>
++
++static spin_lock_t report_lock;
++
++/* Shadow layout customization. */
++#define SHADOW_BYTES_PER_BLOCK 1
++#define SHADOW_BLOCKS_PER_ROW 16
++#define SHADOW_BYTES_PER_ROW (SHADOW_BLOCKS_PER_ROW * SHADOW_BYTES_PER_BLOCK)
++#define SHADOW_ROWS_AROUND_ADDR 2
++
++#define __round_mask(x, y) ((__typeof__(x))((y)-1))
++#define round_up(x, y) ((((x)-1) | __round_mask(x, y))+1)
++#define round_down(x, y) ((x) & ~__round_mask(x, y))
++
++static const uint8_t *find_first_bad_addr(const uint8_t *addr, size_t size)
++{
++	u8 shadow_val = *(u8 *)mxkasan_mem_to_shadow(addr);
++	const uint8_t *first_bad_addr = addr;
++
++	while (!shadow_val && first_bad_addr < addr + size) {
++		first_bad_addr += MXKASAN_SHADOW_SCALE_SIZE;
++		shadow_val = *(u8 *)mxkasan_mem_to_shadow(first_bad_addr);
++	}
++	return first_bad_addr;
++}
++
++
++static void print_error_description(struct mxkasan_access_info *info)
++{
++	const char *bug_type = "unknown crash";
++	u8 shadow_val;
++
++	info->first_bad_addr = find_first_bad_addr(info->access_addr,
++						info->access_size);
++
++	shadow_val = *(u8 *)mxkasan_mem_to_shadow(info->first_bad_addr);
++
++	switch (shadow_val) {
++	case 0 ... MXKASAN_SHADOW_SCALE_SIZE - 1:
++		bug_type = "out of bounds access";
++		break;
++	case MXKASAN_FREE_PAGE:
++ 		bug_type = "use after free";
++ 		break;
++ 	case MXKASAN_SHADOW_GAP:
++ 		bug_type = "wild memory access";
++ 		break;
++	}
++
++	printf("BUG: MXKASan: %s in %p at addr %p\n",
++		bug_type, (void *)info->ip,
++		info->access_addr);
++
++	thread_t* current = get_current_thread();
++	printf("%s of size %zu by task %s/%d\n",
++		info->is_write ? "Write" : "Read",
++		info->access_size, current->name, (int)current->user_pid);
++}
++
++static void dump_stack (void) {
++	thread_print_backtrace(get_current_thread(), __GET_FRAME(0));
++}
++
++
++static void print_address_description(struct mxkasan_access_info *info)
++{
++	dump_stack();
++}
++
++static bool row_is_guilty(const uint8_t *row, const uint8_t *guilty)
++{
++	return (row <= guilty) && (guilty < row + SHADOW_BYTES_PER_ROW);
++}
++
++static long shadow_pointer_offset(const uint8_t *row, const uint8_t *shadow)
++{
++	/* The length of ">ff00ff00ff00ff00: " is
++	 *    3 + (BITS_PER_LONG/8)*2 chars.
++	 */
++	return 3 + (BITS_PER_LONG/8)*2 + (shadow - row)*2 +
++		(shadow - row) / SHADOW_BYTES_PER_BLOCK + 1;
++}
++
++static void print_shadow_for_address(const uint8_t *addr)
++{
++	int i;
++	const uint8_t *shadow = mxkasan_mem_to_shadow(addr);
++	const uint8_t *shadow_row;
++
++	shadow_row = (uint8_t *)round_down((unsigned long)shadow,
++					SHADOW_BYTES_PER_ROW)
++		- SHADOW_ROWS_AROUND_ADDR * SHADOW_BYTES_PER_ROW;
++
++	printf("Memory state around the buggy address:\n");
++
++	for (i = -SHADOW_ROWS_AROUND_ADDR; i <= SHADOW_ROWS_AROUND_ADDR; i++) {
++		const void *kaddr = mxkasan_shadow_to_mem(shadow_row);
++		char buffer[4 + (BITS_PER_LONG/8)*2];
++
++		snprintf(buffer, sizeof(buffer),
++			(i == 0) ? ">%p: " : " %p: ", kaddr);
++
++		mxkasan_disable_current();
++
++        // TODO: make this prettier
++		hexdump8(shadow_row, SHADOW_BYTES_PER_ROW);
++
++		mxkasan_enable_current();
++
++		if (row_is_guilty(shadow_row, shadow)) {
++			for(int i=0; i< (int)
++				shadow_pointer_offset(shadow_row, shadow); i++)
++				printf(" ");
++			printf("^\n");
++		}
++
++		shadow_row += SHADOW_BYTES_PER_ROW;
++	}
++}
++
++void mxkasan_report_error(struct mxkasan_access_info *info)
++{
++
++    spin_lock_saved_state_t state;
++    spin_lock_irqsave(&report_lock, state);
++
++	printf("================================="
++		"=================================\n");
++	print_error_description(info);
++	print_address_description(info);
++	print_shadow_for_address(info->first_bad_addr);
++	printf("================================="
++		"=================================\n");
++
++	spin_unlock_irqrestore(&report_lock, state);
++}
++
++void mxkasan_report_user_access(struct mxkasan_access_info *info)
++{
++    spin_lock_saved_state_t state;
++    spin_lock_irqsave(&report_lock, state);
++	printf("================================="
++	      "=================================\n");
++	printf("BUG: MXKASan: user-memory-access on address %p\n",
++		info->access_addr);
++
++	thread_t* current = get_current_thread();
++	printf("%s of size %zu by task %s/%d\n",
++		info->is_write ? "Write" : "Read",
++		info->access_size, current->name, (int)current->user_pid);
++
++	dump_stack();
++	printf("================================="
++		"=================================\n");
++
++	spin_unlock_irqrestore(&report_lock, state);
++}
++
++
++
++void mxkasan_report(unsigned long addr, size_t size,
++		bool is_write, unsigned long ip)
++{
++	struct mxkasan_access_info info;
++
++	if (likely(!mxkasan_enabled()))
++		return;
++
++	info.access_addr = (uint8_t *)addr;
++	info.access_size = size;
++	info.is_write = is_write;
++	info.ip = ip;
++	mxkasan_report_error(&info);
++}
++
++
++#define DEFINE_ASAN_REPORT_LOAD(size)                     \
++void __asan_report_load##size##_noabort(unsigned long addr) \
++{                                                         \
++	mxkasan_report(addr, size, false, _RET_IP_);	  \
++}                                                         \
++
++#define DEFINE_ASAN_REPORT_STORE(size)                     \
++void __asan_report_store##size##_noabort(unsigned long addr) \
++{                                                          \
++	mxkasan_report(addr, size, true, _RET_IP_);	   \
++}                                                          \
++
++DEFINE_ASAN_REPORT_LOAD(1);
++DEFINE_ASAN_REPORT_LOAD(2);
++DEFINE_ASAN_REPORT_LOAD(4);
++DEFINE_ASAN_REPORT_LOAD(8);
++DEFINE_ASAN_REPORT_LOAD(16);
++DEFINE_ASAN_REPORT_STORE(1);
++DEFINE_ASAN_REPORT_STORE(2);
++DEFINE_ASAN_REPORT_STORE(4);
++DEFINE_ASAN_REPORT_STORE(8);
++DEFINE_ASAN_REPORT_STORE(16);
++
++void __asan_report_load_n_noabort(unsigned long addr, size_t size)
++{
++	mxkasan_report(addr, size, false, _RET_IP_);
++}
++
++void __asan_report_store_n_noabort(unsigned long addr, size_t size)
++{
++	mxkasan_report(addr, size, true, _RET_IP_);
++}
+diff --git a/kernel/lib/mxkasan/rules.mk b/kernel/lib/mxkasan/rules.mk
+new file mode 100644
+index 0000000..8c44419
+--- /dev/null
++++ b/kernel/lib/mxkasan/rules.mk
+@@ -0,0 +1,19 @@
++# Copyright 2017 Attila Szasz
++#
++# Use of this source code is governed by a MIT-style
++# license that can be found in the LICENSE file or at
++# https://opensource.org/licenses/MIT
++
++LOCAL_DIR := $(GET_LOCAL_DIR)
++
++MODULE := $(LOCAL_DIR)
++
++MODULE_SRCS += \
++	$(LOCAL_DIR)/mxkasan.cpp \
++	$(LOCAL_DIR)/report.cpp \
++
++MODULE_DEPS := \
++    kernel/lib/mxtl \
++    kernel/lib/mxkasan_tests \
++
++include make/module.mk
+\ No newline at end of file
+diff --git a/kernel/lib/mxkasan_tests/lib/test_mxkasan.h b/kernel/lib/mxkasan_tests/lib/test_mxkasan.h
+new file mode 100644
+index 0000000..a2c0bc6
+--- /dev/null
++++ b/kernel/lib/mxkasan_tests/lib/test_mxkasan.h
+@@ -0,0 +1,15 @@
++// Copyright 2017 Attila Szasz
++//
++//
++// Use of this source code is governed by a MIT-style
++// license that can be found in the LICENSE file or at
++// https://opensource.org/licenses/MIT
++
++#include <inttypes.h>
++#include <ctype.h>
++#include <stdlib.h>
++#include <stdbool.h>
++
++void kmalloc_oob_right(void);
++
++void kmalloc_oob_left(void);
+\ No newline at end of file
+diff --git a/kernel/lib/mxkasan_tests/rules.mk b/kernel/lib/mxkasan_tests/rules.mk
+new file mode 100644
+index 0000000..36c3b3c
+--- /dev/null
++++ b/kernel/lib/mxkasan_tests/rules.mk
+@@ -0,0 +1,19 @@
++# Copyright 2017 Attila Szasz
++#
++# Use of this source code is governed by a MIT-style
++# license that can be found in the LICENSE file or at
++# https://opensource.org/licenses/MIT
++
++LOCAL_DIR := $(GET_LOCAL_DIR)
++
++MODULE := $(LOCAL_DIR)
++
++MODULE_SRCS += \
++	$(LOCAL_DIR)/test_mxkasan.cpp \
++
++MODULE_DEPS := \
++    kernel/lib/mxtl \
++
++MODULE_COMPILEFLAGS += -fsanitize=kernel-address
++
++include make/module.mk
+diff --git a/kernel/lib/mxkasan_tests/test_mxkasan.cpp b/kernel/lib/mxkasan_tests/test_mxkasan.cpp
+new file mode 100644
+index 0000000..e1655b2
+--- /dev/null
++++ b/kernel/lib/mxkasan_tests/test_mxkasan.cpp
+@@ -0,0 +1,75 @@
++// Copyright 2017 Attila Szasz
++//
++//
++// Use of this source code is governed by a MIT-style
++// license that can be found in the LICENSE file or at
++// https://opensource.org/licenses/MIT
++
++#include <ctype.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <inttypes.h>
++#include <stdlib.h>
++#include <stdbool.h>
++
++#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0])) 
++
++void malloc_oob_right(void)
++{
++	uint8_t *ptr;
++	size_t size = 123;
++
++	printf("out-of-bounds to right\n");
++	ptr = (uint8_t*)malloc(size);
++	if (!ptr) {
++		printf("Allocation failed\n");
++		return;
++	}
++
++	ptr[size] = 'x';
++	free(ptr);
++}
++
++void malloc_oob_left(void)
++{
++	uint8_t *ptr;
++	size_t size = 150;
++
++	printf("out-of-bounds to left\n");
++	ptr = (uint8_t*)malloc(size);
++	if (!ptr) {
++		printf("Allocation failed\n");
++		return;
++	}
++
++	*ptr = *(ptr - 5);
++	free(ptr);
++}
++
++void malloc_uaf(void)
++{
++	uint8_t *ptr;
++	size_t size = 10;
++
++	printf("use-after-free\n");
++	ptr = (uint8_t *)malloc(size);
++	if (!ptr) {
++		printf("Allocation failed\n");
++		return;
++	}
++
++	free(ptr);
++	*ptr = *(ptr + 8);
++}
++
++static char global_array[10];
++
++void mxkasan_global_oob(void)
++{
++	volatile int i = 3;
++	char *p = &global_array[ARRAY_SIZE(global_array) + i];
++
++	printf("out-of-bounds global variable\n");
++	*(volatile char *)p;
++}
+\ No newline at end of file
+diff --git a/kernel/lib/mxtl/rules.mk b/kernel/lib/mxtl/rules.mk
+index 66f842a..c19edb1 100644
+--- a/kernel/lib/mxtl/rules.mk
++++ b/kernel/lib/mxtl/rules.mk
+@@ -19,4 +19,5 @@ MODULE_SRCS := \
+     $(LOCAL_DIR)/inline_array_tests.cpp \
+     $(LOCAL_DIR)/name_tests.cpp \
+ 
++
+ include make/module.mk
+diff --git a/kernel/lib/syscalls/rules.mk b/kernel/lib/syscalls/rules.mk
+index cb08bfc..3075d49 100644
+--- a/kernel/lib/syscalls/rules.mk
++++ b/kernel/lib/syscalls/rules.mk
+@@ -46,4 +46,5 @@ MODULE_COMPILEFLAGS += -I$(BUILDDIR)/kernel/lib/vdso
+ $(BUILDDIR)/$(LOCAL_DIR)/$(LOCAL_DIR)/syscalls.cpp.o: \
+     $(BUILDDIR)/kernel/lib/vdso/vdso-valid-sysret.h
+ 
++
+ include make/module.mk
+diff --git a/kernel/lib/vdso/rules.mk b/kernel/lib/vdso/rules.mk
+index 83060ad..3c1346c 100644
+--- a/kernel/lib/vdso/rules.mk
++++ b/kernel/lib/vdso/rules.mk
+@@ -40,5 +40,6 @@ $(BUILDDIR)/$(LOCAL_DIR)/vdso-valid-sysret.h: \
+ 	$(NOECHO)$(SHELLEXEC) $^ > $@.new
+ 	@mv -f $@.new $@
+ GENERATED += $(BUILDDIR)/$(LOCAL_DIR)/vdso-valid-sysret.h
++	
+ 
+ include make/module.mk
+diff --git a/kernel/top/main.c b/kernel/top/main.c
+index 9816fc1..ee7a161 100644
+--- a/kernel/top/main.c
++++ b/kernel/top/main.c
+@@ -22,6 +22,7 @@
+ #include <kernel/thread.h>
+ #include <lk/init.h>
+ #include <lk/main.h>
++#include <lib/mxkasan.h>
+ 
+ extern void (*const __init_array_start[])(void);
+ extern void (*const __init_array_end[])(void);
+@@ -74,6 +75,7 @@ void lk_main(void)
+ 
+     lk_primary_cpu_init_level(LK_INIT_LEVEL_KERNEL, LK_INIT_LEVEL_THREADING - 1);
+ 
++
+     // create a thread to complete system initialization
+     dprintf(SPEW, "creating bootstrap completion thread\n");
+     thread_t *t = thread_create("bootstrap2", &bootstrap2, NULL, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+@@ -102,6 +104,10 @@ static int bootstrap2(void *arg)
+     lk_primary_cpu_init_level(LK_INIT_LEVEL_PLATFORM, LK_INIT_LEVEL_TARGET - 1);
+     target_init();
+ 
++
++    dprintf(SPEW, "testing mxkasan\n");
++    mxkasan_init();
++
+     dprintf(SPEW, "calling apps_init()\n");
+     lk_primary_cpu_init_level(LK_INIT_LEVEL_TARGET, LK_INIT_LEVEL_APPS - 1);
+     apps_init();
+diff --git a/make/compile.mk b/make/compile.mk
+index 862d953..0108b3d 100644
+--- a/make/compile.mk
++++ b/make/compile.mk
+@@ -37,12 +37,12 @@ $(MODULE_OBJS): MODULE_SRCDEPS:=$(MODULE_SRCDEPS)
+ $(MODULE_COBJS): $(MODULE_BUILDDIR)/%.c.o: %.c $(MODULE_SRCDEPS)
+ 	@$(MKDIR)
+ 	$(call BUILDECHO, compiling $<)
+-	$(NOECHO)$(CC) $(GLOBAL_OPTFLAGS) $(MODULE_OPTFLAGS) $(GLOBAL_COMPILEFLAGS) $(KERNEL_COMPILEFLAGS) $(ARCH_COMPILEFLAGS) $(MODULE_COMPILEFLAGS) $(GLOBAL_CFLAGS) $(KERNEL_CFLAGS) $(ARCH_CFLAGS) $(MODULE_CFLAGS) $(GLOBAL_INCLUDES) $(KERNEL_INCLUDES) -c $< -MD -MP -MT $@ -MF $(@:%o=%d) -o $@
++	$(NOECHO)$(CC) $(GLOBAL_OPTFLAGS) $(MODULE_OPTFLAGS) $(GLOBAL_COMPILEFLAGS) $(KERNEL_COMPILEFLAGS) $(ARCH_COMPILEFLAGS) $(MODULE_COMPILEFLAGS) $(DISABLESTACKASAN) $(DISABLEGLOBALASAN)  $(GLOBAL_CFLAGS) $(KERNEL_CFLAGS) $(ARCH_CFLAGS) $(MODULE_CFLAGS) $(GLOBAL_INCLUDES) $(KERNEL_INCLUDES) -c $< -MD -MP -MT $@ -MF $(@:%o=%d) -o $@
+ 
+ $(MODULE_CPPOBJS): $(MODULE_BUILDDIR)/%.cpp.o: %.cpp $(MODULE_SRCDEPS)
+ 	@$(MKDIR)
+ 	$(call BUILDECHO, compiling $<)
+-	$(NOECHO)$(CC) $(GLOBAL_OPTFLAGS) $(MODULE_OPTFLAGS) $(GLOBAL_COMPILEFLAGS) $(KERNEL_COMPILEFLAGS) $(ARCH_COMPILEFLAGS) $(MODULE_COMPILEFLAGS) $(GLOBAL_CPPFLAGS) $(KERNEL_CPPFLAGS) $(ARCH_CPPFLAGS) $(MODULE_CPPFLAGS) $(GLOBAL_INCLUDES) $(KERNEL_INCLUDES) -c $< -MD -MP -MT $@ -MF $(@:%o=%d) -o $@
++	$(NOECHO)$(CC) $(GLOBAL_OPTFLAGS) $(MODULE_OPTFLAGS) $(GLOBAL_COMPILEFLAGS) $(KERNEL_COMPILEFLAGS) $(ARCH_COMPILEFLAGS) $(MODULE_COMPILEFLAGS) $(DISABLESTACKASAN) $(DISABLEGLOBALASAN)  $(GLOBAL_CPPFLAGS) $(KERNEL_CPPFLAGS) $(ARCH_CPPFLAGS) $(MODULE_CPPFLAGS) $(GLOBAL_INCLUDES) $(KERNEL_INCLUDES) -c $< -MD -MP -MT $@ -MF $(@:%o=%d) -o $@
+ 
+ $(MODULE_ASMOBJS): $(MODULE_BUILDDIR)/%.S.o: %.S $(MODULE_SRCDEPS)
+ 	@$(MKDIR)
+diff --git a/make/engine.mk b/make/engine.mk
+index ac47443..6fb907c 100644
+--- a/make/engine.mk
++++ b/make/engine.mk
+@@ -137,8 +137,9 @@ endif
+ 
+ # Kernel compile flags
+ KERNEL_INCLUDES := $(BUILDDIR) kernel/include
+-KERNEL_COMPILEFLAGS := -fno-pic -ffreestanding -include $(KERNEL_CONFIG_HEADER)
+-KERNEL_COMPILEFLAGS += -Wformat=2
++KERNEL_COMPILEFLAGS := -fno-pic -ffreestanding -include $(KERNEL_CONFIG_HEADER) 
++KERNEL_COMPILEFLAGS += -Wformat=2 
++#KERNEL_COMPILEFLAGS += -Wformat=2 -fsanitize=kernel-address
+ ifeq ($(call TOBOOL,$(USE_CLANG)),false)
+ KERNEL_COMPILEFLAGS += -Wformat-signedness
+ endif
+@@ -373,6 +374,12 @@ include kernel/arch/$(ARCH)/rules.mk
+ include kernel/top/rules.mk
+ include make/sysgen.mk
+ 
++ifeq ($(call TOBOOL,$(USE_CLANG)),true)
++#i dont think it does anything meaningful 
++GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-fuchsia
++#GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-none
++endif
++
+ # recursively include any modules in the MODULE variable, leaving a trail of included
+ # modules in the ALLMODULES list
+ include make/recurse.mk
+@@ -531,6 +538,8 @@ READELF := $(CLANG_TOOLCHAIN_PREFIX)llvm-readobj -elf-output-style=GNU
+ CPPFILT := $(CLANG_TOOLCHAIN_PREFIX)llvm-cxxfilt
+ SIZE := $(CLANG_TOOLCHAIN_PREFIX)llvm-size
+ NM := $(CLANG_TOOLCHAIN_PREFIX)llvm-nm
++DISABLESTACKASAN := -mllvm --asan-stack=0 
++DISABLEGLOBALASAN := -mllvm --asan-globals=0 
+ else
+ CC := $(TOOLCHAIN_PREFIX)gcc
+ AR := $(TOOLCHAIN_PREFIX)ar
+@@ -539,10 +548,15 @@ READELF := $(TOOLCHAIN_PREFIX)readelf
+ CPPFILT := $(TOOLCHAIN_PREFIX)c++filt
+ SIZE := $(TOOLCHAIN_PREFIX)size
+ NM := $(TOOLCHAIN_PREFIX)nm
++DISABLESTACKASAN :=  --param asan-stack=0
++DISABLEGLOBALASAN := --param asan-global=0
+ endif
+ LD := $(TOOLCHAIN_PREFIX)ld
+ ifeq ($(call TOBOOL,$(USE_LLD)),true)
+ LD := $(CLANG_TOOLCHAIN_PREFIX)ld.lld
++# lets go with LD for now, because ld.lld has some missing dependencies
++# which i can't build apparently
++#LD := $(TOOLCHAIN_PREFIX)ld
+ endif
+ ifeq ($(call TOBOOL,$(USE_GOLD)),true)
+ USER_LD := $(LD).gold
+@@ -563,7 +577,7 @@ export GCC_COLORS ?= 1
+ # setup host toolchain
+ # default to prebuilt clang
+ FOUND_HOST_GCC ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)gcc)
+-HOST_TOOLCHAIN_PREFIX ?= $(CLANG_TOOLCHAIN_PREFIX)
++HOST_TOOLCHAIN_PREFIX ?= ""
+ HOST_USE_CLANG ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)clang)
+ ifneq ($(HOST_USE_CLANG),)
+ HOST_CC      := $(HOST_TOOLCHAIN_PREFIX)clang
+@@ -592,8 +606,8 @@ endif
+ HOST_OBJCOPY := $(HOST_TOOLCHAIN_PREFIX)objcopy
+ HOST_STRIP   := $(HOST_TOOLCHAIN_PREFIX)strip
+ 
+-# Host compile flags
+-HOST_COMPILEFLAGS := -Wall -g -O2 -Isystem/public -Isystem/private -I$(GENERATED_INCLUDES)
++# Host compile flags, change back to O2 when done
++HOST_COMPILEFLAGS := -Wall -g -O0 -Isystem/public -Isystem/private -I$(GENERATED_INCLUDES)
+ HOST_CFLAGS := -std=c11
+ HOST_CPPFLAGS := -std=c++14 -fno-exceptions -fno-rtti
+ HOST_LDFLAGS :=
+@@ -602,10 +616,12 @@ ifneq ($(HOST_USE_CLANG),)
+ # dependency) rather than the host library. For host tools without
+ # C++, ignore the unused arguments.
+ HOST_CPPFLAGS += -stdlib=libc++
+-HOST_LDFLAGS += -stdlib=libc++ -static-libstdc++
++HOST_LDFLAGS += -stdlib=libc++ -static-libstdc++ -lc++abi -lpthread
+ # We don't need to link libc++abi.a on OS X.
+ ifneq ($(HOST_PLATFORM),darwin)
+-HOST_LDFLAGS += -Lprebuilt/downloads/clang+llvm-$(HOST_ARCH)-$(HOST_PLATFORM)/lib -Wl,-Bstatic -lc++abi -Wl,-Bdynamic -lpthread
++HOST_LDFLAGS += -Lprebuilt/downloads/clang+llvm-$(HOST_ARCH)-$(HOST_PLATFORM)/lib -Wl,-Bstatic -lc++abi -Wl,-Bstatic -lpthread
++
++#HOST_LDFLAGS +=  -Wl,-Bstatic -lc++abi -Wl,-Bdynamic -lpthread
+ endif
+ HOST_LDFLAGS += -Wno-unused-command-line-argument
+ endif
+diff --git a/recompile.sh b/recompile.sh
+new file mode 100755
+index 0000000..3dc3087
+--- /dev/null
++++ b/recompile.sh
+@@ -0,0 +1,3 @@
++mv build-magenta-qemu-arm64 build-magenta-qemu-arm64-clang
++make -j32 magenta-qemu-arm64 USE_CLANG=yes
++mv build-magenta-qemu-arm64-clang/ build-magenta-qemu-arm64
+diff --git a/scripts/run-magenta b/scripts/run-magenta
+index 149cdf5..10ab89e 100755
+--- a/scripts/run-magenta
++++ b/scripts/run-magenta
+@@ -165,7 +165,7 @@ fi
+ if (( !$GRAPHICS  )); then
+     ARGS+=" -nographic"
+ else
+-    ARGS+=" -serial stdio"
++    ARGS+=" -serial mon:stdio"
+     if [[ "$ARCH" == "x86-64" && $VIRTIO == 0 ]]; then
+         # Enable Bochs VBE device, which Magenta has a device for
+         ARGS+=" -vga std"
+@@ -328,6 +328,9 @@ CMDLINE+="kernel.entropy=$(head -c 32 /dev/urandom | shasum -a 256 | awk '{ prin
+ # Don't 'reboot' the emulator if the kernel crashes
+ CMDLINE+="kernel.halt_on_panic=true "
+ 
++#Disable or enable ktrace - used for testing locking issue 
++#CMDLINE+="ktrace.bufsize=0"
++
+ # run qemu
+ set -x
+ exec $QEMU $ARGS -append "$CMDLINE" "$@"
